@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
+const USER_ID = "0";
 
-export default function Playground({ chat, onUpdateChat, onNewChat }) {
+export default function Playground({ chat, messages, setMessages, onUpdateChat, onNewChat }) {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const messagesEndRef = useRef(null);
@@ -12,9 +13,8 @@ export default function Playground({ chat, onUpdateChat, onNewChat }) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  useEffect(scrollToBottom, [chat?.messages]);
+  useEffect(scrollToBottom, [messages]);
 
-  // Auto-resize textarea
   const handleInput = (e) => {
     setInput(e.target.value);
     const el = e.target;
@@ -37,26 +37,38 @@ export default function Playground({ chat, onUpdateChat, onNewChat }) {
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     setIsStreaming(true);
 
-    // Add user message + empty assistant message
+    const isFirstMessage = messages.length === 0;
+
     const userMsg = { role: "user", content: text };
     const assistantMsg = {
       role: "assistant",
       content: "",
       thinking: "",
       isStreaming: true,
+      thinkingDone: false,
     };
 
-    onUpdateChat((c) => ({
-      ...c,
-      title: c.messages.length === 0 ? text.slice(0, 40) : c.title,
-      messages: [...c.messages, userMsg, assistantMsg],
-    }));
+    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+
+    // Update title in sidebar immediately for first message
+    if (isFirstMessage) {
+      onUpdateChat(() => ({ title: text.slice(0, 40) }));
+    }
+
+    let fullContent = "";
+    let fullThinking = "";
+
+    // Build history from existing messages (exclude the ones we just added)
+    const history = messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .filter((m) => m.content && m.content.length > 0)
+      .map((m) => ({ role: m.role, content: m.content }));
 
     try {
       const response = await fetch(`${API_BASE}/v1/chatbot/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, history }),
       });
 
       const reader = response.body.getReader();
@@ -77,50 +89,92 @@ export default function Playground({ chat, onUpdateChat, onNewChat }) {
           const data = JSON.parse(line.slice(6));
 
           if (data.type === "thinking") {
-            onUpdateChat((c) => {
-              const msgs = [...c.messages];
+            fullThinking += data.content;
+            setMessages((prev) => {
+              const msgs = [...prev];
               const last = { ...msgs[msgs.length - 1] };
               last.thinking += data.content;
               msgs[msgs.length - 1] = last;
-              return { ...c, messages: msgs };
+              return msgs;
             });
           }
 
           if (data.type === "content") {
-            onUpdateChat((c) => {
-              const msgs = [...c.messages];
+            fullContent += data.content;
+            setMessages((prev) => {
+              const msgs = [...prev];
               const last = { ...msgs[msgs.length - 1] };
+              if (!last.thinkingDone && last.thinking) {
+                last.thinkingDone = true;
+              }
               last.content += data.content;
               msgs[msgs.length - 1] = last;
-              return { ...c, messages: msgs };
+              return msgs;
             });
           }
         }
       }
     } catch (err) {
-      onUpdateChat((c) => {
-        const msgs = [...c.messages];
+      setMessages((prev) => {
+        const msgs = [...prev];
         const last = { ...msgs[msgs.length - 1] };
         last.content = `Error: ${err.message}`;
         last.isStreaming = false;
         msgs[msgs.length - 1] = last;
-        return { ...c, messages: msgs };
+        return msgs;
       });
+      setIsStreaming(false);
+      return;
     }
 
     // Mark streaming done
-    onUpdateChat((c) => {
-      const msgs = [...c.messages];
+    setMessages((prev) => {
+      const msgs = [...prev];
       const last = { ...msgs[msgs.length - 1] };
       last.isStreaming = false;
+      last.thinkingDone = true;
       msgs[msgs.length - 1] = last;
-      return { ...c, messages: msgs };
+      return msgs;
     });
 
     setIsStreaming(false);
+
+    // Save messages to backend
+    try {
+      await fetch(
+        `${API_BASE}/v1/chatbot/conversations/${USER_ID}/${chat.id}/messages`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_message: text,
+            assistant_content: fullContent,
+            assistant_thinking: fullThinking || null,
+          }),
+        }
+      );
+    } catch {
+      // ignore save errors
+    }
+
+    // Update title on first message
+    if (isFirstMessage) {
+      const title = text.slice(0, 40);
+      try {
+        await fetch(
+          `${API_BASE}/v1/chatbot/conversations/${USER_ID}/${chat.id}/title`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title }),
+          }
+        );
+      } catch {
+        // ignore title update errors
+      }
+    }
   };
 
-  // ── Empty state ──
   if (!chat) {
     return (
       <main className="playground">
@@ -138,7 +192,7 @@ export default function Playground({ chat, onUpdateChat, onNewChat }) {
   return (
     <main className="playground">
       <div className="messages-area">
-        {chat.messages.map((msg, i) => (
+        {messages.map((msg, i) => (
           <MessageBubble key={i} message={msg} />
         ))}
         <div ref={messagesEndRef} />
@@ -168,7 +222,7 @@ export default function Playground({ chat, onUpdateChat, onNewChat }) {
 }
 
 function MessageBubble({ message }) {
-  const [thinkCollapsed, setThinkCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
 
   if (message.role === "user") {
     return <div className="message user">{message.content}</div>;
@@ -176,39 +230,50 @@ function MessageBubble({ message }) {
 
   const hasThinking = message.thinking && message.thinking.length > 0;
   const hasContent = message.content && message.content.length > 0;
+  const isThinkingActive = message.isStreaming && !message.thinkingDone;
 
-  // Streaming with nothing yet — show typing indicator
+  // Streaming with nothing yet
   if (message.isStreaming && !hasThinking && !hasContent) {
     return (
       <div className="message assistant">
-        <div className="typing-indicator">
-          <span className="typing-dot" />
-          <span className="typing-dot" />
-          <span className="typing-dot" />
+        <div className="thinking-block active">
+          <div className="thinking-header">
+            <ThinkingSpinner />
+            <span>Thinking...</span>
+          </div>
         </div>
       </div>
     );
   }
 
-  // Auto-collapse thinking once content starts
-  const collapsed = hasContent && !message.isStreaming ? thinkCollapsed : false;
-
   return (
     <div className="message assistant">
       {hasThinking && (
         <div
-          className={`thinking-block ${collapsed ? "collapsed" : ""} ${
-            !hasContent ? "only" : ""
-          }`}
+          className={`thinking-block ${isThinkingActive ? "active" : ""} ${
+            collapsed ? "collapsed" : ""
+          } ${!hasContent ? "only" : ""}`}
         >
           <div
             className="thinking-header"
-            onClick={() => hasContent && setThinkCollapsed((v) => !v)}
+            onClick={() => !isThinkingActive && setCollapsed((v) => !v)}
           >
-            <span className="arrow">&#9660;</span>
-            {message.isStreaming && !hasContent ? "Thinking..." : "Thought process"}
+            {isThinkingActive ? (
+              <ThinkingSpinner />
+            ) : (
+              <span className={`arrow ${collapsed ? "right" : ""}`}>
+                &#9660;
+              </span>
+            )}
+            <span>
+              {isThinkingActive ? "Thinking..." : "Thought process"}
+            </span>
           </div>
-          <div className="thinking-content">{message.thinking}</div>
+          {!collapsed && (
+            <div className="thinking-content">
+              <ThinkingSteps text={message.thinking} isActive={isThinkingActive} />
+            </div>
+          )}
         </div>
       )}
       {hasContent && (
@@ -217,5 +282,77 @@ function MessageBubble({ message }) {
         </div>
       )}
     </div>
+  );
+}
+
+function ThinkingSpinner() {
+  return (
+    <span className="thinking-spinner">
+      <span className="spinner-dot" />
+      <span className="spinner-dot" />
+      <span className="spinner-dot" />
+    </span>
+  );
+}
+
+function ThinkingSteps({ text, isActive }) {
+  const lines = text.split("\n").filter((l) => l.trim() !== "");
+
+  return (
+    <div className="thinking-steps">
+      {lines.map((line, i) => {
+        const isLast = i === lines.length - 1;
+        const isStep = isStepLine(line);
+        const isError = isErrorLine(line);
+        const isSql = line.startsWith("SQL:");
+
+        let cls = "step-line";
+        if (isError) cls += " step-error";
+        else if (isSql) cls += " step-sql";
+        else if (isStep) cls += " step-action";
+
+        return (
+          <div key={i} className={cls}>
+            {isStep && (
+              <span className="step-indicator">
+                {isActive && isLast ? (
+                  <span className="step-pulse" />
+                ) : isError ? (
+                  <span className="step-icon error">!</span>
+                ) : (
+                  <span className="step-icon done">&#10003;</span>
+                )}
+              </span>
+            )}
+            <span className="step-text">{line}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function isStepLine(line) {
+  const steps = [
+    "Routing to:",
+    "Introspecting",
+    "Found ",
+    "Generating SQL",
+    "Validating",
+    "Executing query",
+    "Query returned",
+    "Synthesizing",
+    "Retrying",
+    "Reasoning:",
+  ];
+  return steps.some((s) => line.startsWith(s));
+}
+
+function isErrorLine(line) {
+  return (
+    line.startsWith("Parse error:") ||
+    line.startsWith("Validation failed:") ||
+    line.startsWith("Execution error:") ||
+    line.startsWith("Error:")
   );
 }

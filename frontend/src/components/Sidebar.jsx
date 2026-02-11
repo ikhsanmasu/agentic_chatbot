@@ -1,4 +1,4 @@
-export default function Sidebar({ chats, activeChatId, onSelectChat, onNewChat }) {
+export default function Sidebar({ chats, activeChatId, onSelectChat, onNewChat, onDeleteChat }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -14,7 +14,16 @@ export default function Sidebar({ chats, activeChatId, onSelectChat, onNewChat }
             className={`chat-item ${chat.id === activeChatId ? "active" : ""}`}
             onClick={() => onSelectChat(chat.id)}
           >
-            {chat.title}
+            <span className="chat-item-title">{chat.title}</span>
+            <button
+              className="chat-delete-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteChat(chat.id);
+              }}
+            >
+              &times;
+            </button>
           </div>
         ))}
       </div>

@@ -7,6 +7,7 @@ services:
       - .env
     depends_on:
       - postgres
+      - redis
 
   frontend:
     build: ./frontend
@@ -14,6 +15,13 @@ services:
       - "3001:80"
     depends_on:
       - backend
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
 
   postgres:
     image: postgres:16-alpine
@@ -30,3 +38,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

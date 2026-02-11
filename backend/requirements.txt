@@ -6,3 +6,6 @@ pydantic
 pydantic-settings
 pytest
 httpx
+sqlmodel
+clickhouse-connect
+redis
