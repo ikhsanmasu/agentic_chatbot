@@ -3,15 +3,15 @@ import logging
 import re
 from collections.abc import Generator
 
-from sqlalchemy import text
+from sqlmodel import text
 
 from app.agents.base import AgentResult, BaseAgent
 from app.agents.database.introspect import get_schema_info
-from app.agents.database.prompts import NL_TO_SQL_SYSTEM, NL_TO_SQL_USER, RETRY_USER
 from app.agents.database.schemas import QueryResult
-from app.core.database import engine
+from app.core.database import clickhouse_engine
 from app.core.llm.base import BaseLLM
 from app.core.llm.schemas import GenerateConfig
+from app.modules.admin.service import resolve_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class DatabaseAgent(BaseAgent):
         super().__init__(llm)
 
     def _get_schema(self) -> str:
-        return get_schema_info(engine)
+        return get_schema_info(clickhouse_engine)
 
     def _parse_llm_response(self, raw: str) -> tuple[str, str]:
         raw = raw.strip()
@@ -47,7 +47,7 @@ class DatabaseAgent(BaseAgent):
 
     def _execute_sql(self, sql: str) -> QueryResult:
         
-        with engine.connect() as conn:
+        with clickhouse_engine.connect() as conn:
             result = conn.execute(text(sql))
             columns = list(result.keys())
             rows = [list(row) for row in result.fetchall()]
@@ -81,11 +81,12 @@ class DatabaseAgent(BaseAgent):
         config = GenerateConfig(temperature=0)
 
         messages = [
-            {"role": "system", "content": NL_TO_SQL_SYSTEM.format(schema=schema)},
-            {"role": "user", "content": NL_TO_SQL_USER.format(question=input_text)},
+            {"role": "system", "content": resolve_prompt("nl_to_sql_system").format(schema=schema)},
+            {"role": "user", "content": resolve_prompt("nl_to_sql_user").format(question=input_text)},
         ]
 
         attempts = []
+        retry_tpl = resolve_prompt("nl_to_sql_retry")
 
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -96,7 +97,7 @@ class DatabaseAgent(BaseAgent):
                 logger.warning("Attempt %d — parse error: %s", attempt, error_msg)
                 attempts.append({"attempt": attempt, "error": error_msg})
                 messages.append({"role": "assistant", "content": response.text})
-                messages.append({"role": "user", "content": RETRY_USER.format(error=error_msg)})
+                messages.append({"role": "user", "content": retry_tpl.format(error=error_msg)})
                 continue
 
             try:
@@ -106,7 +107,7 @@ class DatabaseAgent(BaseAgent):
                 logger.warning("Attempt %d — validation error: %s", attempt, error_msg)
                 attempts.append({"attempt": attempt, "sql": sql, "error": str(e)})
                 messages.append({"role": "assistant", "content": response.text})
-                messages.append({"role": "user", "content": RETRY_USER.format(error=error_msg)})
+                messages.append({"role": "user", "content": retry_tpl.format(error=error_msg)})
                 continue
 
             try:
@@ -116,7 +117,7 @@ class DatabaseAgent(BaseAgent):
                 logger.warning("Attempt %d — execution error: %s", attempt, error_msg)
                 attempts.append({"attempt": attempt, "sql": sql, "error": str(e)})
                 messages.append({"role": "assistant", "content": response.text})
-                messages.append({"role": "user", "content": RETRY_USER.format(error=error_msg)})
+                messages.append({"role": "user", "content": retry_tpl.format(error=error_msg)})
                 continue
 
             output = self._format_result(result, explanation)
@@ -139,24 +140,25 @@ class DatabaseAgent(BaseAgent):
     def execute_stream(self, input_text: str, context: dict | None = None) -> Generator[dict, None, None]:
         """Step-by-step streaming with thinking events. Yields a final _result event."""
 
-        yield {"type": "thinking", "content": "Introspecting database schema...\n"}
+        yield {"type": "thinking", "content": "Memeriksa skema database...\n"}
         schema = self._get_schema()
         table_count = schema.count("TABLE ")
-        yield {"type": "thinking", "content": f"Found {table_count} tables.\n\n"}
+        yield {"type": "thinking", "content": f"Skema tersedia: {table_count} tabel.\n\n"}
 
         config = GenerateConfig(temperature=0)
         messages = [
-            {"role": "system", "content": NL_TO_SQL_SYSTEM.format(schema=schema)},
-            {"role": "user", "content": NL_TO_SQL_USER.format(question=input_text)},
+            {"role": "system", "content": resolve_prompt("nl_to_sql_system").format(schema=schema)},
+            {"role": "user", "content": resolve_prompt("nl_to_sql_user").format(question=input_text)},
         ]
 
         final_result = None
+        retry_tpl = resolve_prompt("nl_to_sql_retry")
 
         for attempt in range(1, MAX_RETRIES + 1):
             if attempt > 1:
-                yield {"type": "thinking", "content": f"Retrying... (attempt {attempt}/{MAX_RETRIES})\n"}
+                yield {"type": "thinking", "content": f"Mencoba ulang... (percobaan {attempt}/{MAX_RETRIES})\n"}
 
-            yield {"type": "thinking", "content": "Generating SQL query...\n"}
+            yield {"type": "thinking", "content": "Menyusun query SQL dari instruksi...\n"}
 
             # Step 1: Generate
             try:
@@ -165,39 +167,46 @@ class DatabaseAgent(BaseAgent):
             except (json.JSONDecodeError, KeyError) as e:
                 error_msg = f"Failed to parse your response as JSON: {e}. Raw output: {response.text[:200]}"
                 logger.warning("Attempt %d — parse error: %s", attempt, error_msg)
-                yield {"type": "thinking", "content": f"Parse error: {e}\n"}
+                yield {"type": "thinking", "content": f"Kesalahan parsing: {e}\n"}
                 messages.append({"role": "assistant", "content": response.text})
-                messages.append({"role": "user", "content": RETRY_USER.format(error=error_msg)})
+                messages.append({"role": "user", "content": retry_tpl.format(error=error_msg)})
                 continue
 
-            yield {"type": "thinking", "content": f"SQL: {sql}\nExplanation: {explanation}\n\n"}
+            yield {
+                "type": "thinking",
+                "content": (
+                    "Rencana query\n"
+                    f"SQL: {sql}\n"
+                    f"Alasan: {explanation}\n\n"
+                ),
+            }
 
             # Step 2: Validate
-            yield {"type": "thinking", "content": "Validating query...\n"}
+            yield {"type": "thinking", "content": "Validasi query (hanya SELECT + cek kata terlarang)...\n"}
             try:
                 self._validate_sql(sql)
             except ValueError as e:
                 error_msg = f"SQL validation error: {e}. Generated SQL: {sql}"
                 logger.warning("Attempt %d — validation error: %s", attempt, error_msg)
-                yield {"type": "thinking", "content": f"Validation failed: {e}\n"}
+                yield {"type": "thinking", "content": f"Validasi gagal: {e}\n"}
                 messages.append({"role": "assistant", "content": response.text})
-                messages.append({"role": "user", "content": RETRY_USER.format(error=error_msg)})
+                messages.append({"role": "user", "content": retry_tpl.format(error=error_msg)})
                 continue
 
             # Step 3: Execute
-            yield {"type": "thinking", "content": "Executing query on ClickHouse...\n"}
+            yield {"type": "thinking", "content": "Menjalankan query di ClickHouse...\n"}
             try:
                 result = self._execute_sql(sql)
             except Exception as e:
                 error_msg = f"ClickHouse execution error: {e}. SQL: {sql}"
                 logger.warning("Attempt %d — execution error: %s", attempt, error_msg)
-                yield {"type": "thinking", "content": f"Execution error: {e}\n"}
+                yield {"type": "thinking", "content": f"Eksekusi gagal: {e}\n"}
                 messages.append({"role": "assistant", "content": response.text})
-                messages.append({"role": "user", "content": RETRY_USER.format(error=error_msg)})
+                messages.append({"role": "user", "content": retry_tpl.format(error=error_msg)})
                 continue
 
             # Success
-            yield {"type": "thinking", "content": f"Query returned {result.row_count} rows.\n"}
+            yield {"type": "thinking", "content": f"Hasil query: {result.row_count} baris.\n"}
 
             output = self._format_result(result, explanation)
             final_result = AgentResult(

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class HistoryMessage(BaseModel):
@@ -10,25 +10,13 @@ class HistoryMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
-    history: list[HistoryMessage] = []
+    history: list[HistoryMessage] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
     status: str
     response: str
     usage: dict
-
-
-class QueryRequest(BaseModel):
-    question: str
-
-
-class QueryResponse(BaseModel):
-    status: str
-    response: str
-    sql: str
-    row_count: int
-
 
 # ── Conversation schemas ──
 
@@ -67,3 +55,13 @@ class SaveMessagesRequest(BaseModel):
     user_message: str
     assistant_content: str
     assistant_thinking: Optional[str] = None
+
+
+class HistoryEntry(BaseModel):
+    id: int
+    user_id: str
+    conversation_id: str
+    user_message: str
+    assistant_content: str
+    assistant_thinking: Optional[str] = None
+    created_at: float

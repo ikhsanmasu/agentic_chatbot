@@ -7,20 +7,19 @@ from app.modules.chatbot.schemas import (
     ConversationDetail,
     ConversationSummary,
     CreateConversationRequest,
-    QueryRequest,
-    QueryResponse,
+    HistoryEntry,
     SaveMessagesRequest,
     UpdateConversationTitleRequest,
 )
 from app.modules.chatbot.service import (
     chat,
     chat_stream,
+    clear_history,
     create_conversation,
     delete_conversation,
     get_conversation,
+    list_history,
     list_conversations,
-    query,
-    query_stream,
     save_messages,
     update_conversation_title,
 )
@@ -40,20 +39,6 @@ async def chat_stream_endpoint(request: ChatRequest):
         media_type="text/event-stream",
     )
 
-@router.post("/query", response_model=QueryResponse)
-async def query_endpoint(request: QueryRequest):
-    return query(request=request)
-
-
-@router.post("/query/stream")
-async def query_stream_endpoint(request: QueryRequest):
-    return StreamingResponse(
-        query_stream(request),
-        media_type="text/event-stream",
-    )
-
-
-# ── Conversation endpoints ──
 
 @router.get("/conversations/{user_id}", response_model=list[ConversationSummary])
 async def list_conversations_endpoint(user_id: str):
@@ -67,7 +52,7 @@ async def create_conversation_endpoint(user_id: str, request: CreateConversation
 
 @router.get("/conversations/{user_id}/{conversation_id}", response_model=ConversationDetail)
 async def get_conversation_endpoint(user_id: str, conversation_id: str):
-    conv = get_conversation(conversation_id)
+    conv = get_conversation(user_id, conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conv
@@ -85,7 +70,7 @@ async def delete_conversation_endpoint(user_id: str, conversation_id: str):
 async def update_title_endpoint(
     user_id: str, conversation_id: str, request: UpdateConversationTitleRequest
 ):
-    updated = update_conversation_title(conversation_id, request.title)
+    updated = update_conversation_title(user_id, conversation_id, request.title)
     if not updated:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"status": "updated"}
@@ -96,6 +81,7 @@ async def save_messages_endpoint(
     user_id: str, conversation_id: str, request: SaveMessagesRequest
 ):
     saved = save_messages(
+        user_id,
         conversation_id,
         request.user_message,
         request.assistant_content,
@@ -104,3 +90,19 @@ async def save_messages_endpoint(
     if not saved:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"status": "saved"}
+
+
+@router.get("/history/{user_id}", response_model=list[HistoryEntry])
+async def list_history_endpoint(
+    user_id: str,
+    conversation_id: str | None = None,
+    limit: int = 100,
+):
+    safe_limit = max(1, min(limit, 500))
+    return list_history(user_id, conversation_id=conversation_id, limit=safe_limit)
+
+
+@router.delete("/history/{user_id}")
+async def clear_history_endpoint(user_id: str, conversation_id: str | None = None):
+    deleted_count = clear_history(user_id, conversation_id=conversation_id)
+    return {"status": "deleted", "deleted_count": deleted_count}

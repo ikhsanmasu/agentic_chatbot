@@ -1,27 +1,12 @@
-from collections.abc import Generator
-
 from openai import OpenAI
 
 from app.core.llm.base import BaseLLM
 from app.core.llm.schemas import GenerateConfig, LLMResponse
 
 
-class OpenAICompatibleProvider(BaseLLM):
-    def __init__(
-        self,
-        api_key: str,
-        model: str,
-        base_url: str | None = None,
-        default_headers: dict | None = None,
-    ):
-        if base_url:
-            self._client = OpenAI(
-                api_key=api_key,
-                base_url=base_url,
-                default_headers=default_headers or None,
-            )
-        else:
-            self._client = OpenAI(api_key=api_key, default_headers=default_headers or None)
+class XaiProvider(BaseLLM):
+    def __init__(self, api_key: str, model: str):
+        self._client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
         self._model = model
 
     def _build_params(self, messages: list[dict], config: GenerateConfig) -> dict:
@@ -52,7 +37,7 @@ class OpenAICompatibleProvider(BaseLLM):
             },
         )
 
-    def generate_stream(self, messages: list[dict], config: GenerateConfig | None = None) -> Generator[str, None, None]:
+    def generate_stream(self, messages: list[dict], config: GenerateConfig | None = None):
         config = config or GenerateConfig()
 
         stream = self._client.chat.completions.create(
@@ -63,8 +48,3 @@ class OpenAICompatibleProvider(BaseLLM):
             delta = chunk.choices[0].delta.content
             if delta:
                 yield delta
-
-
-class OpenAIProvider(OpenAICompatibleProvider):
-    def __init__(self, api_key: str, model: str, base_url: str | None = None):
-        super().__init__(api_key=api_key, model=model, base_url=base_url)

@@ -1,11 +1,22 @@
 import { useState, useRef, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
+import remarkGfm from "remark-gfm";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 const USER_ID = "0";
 
-export default function Playground({ chat, messages, setMessages, onUpdateChat, onNewChat }) {
+export default function Playground({
+  chat,
+  messages,
+  setMessages,
+  onUpdateChat,
+  onUpdateChatById,
+  onNewChat,
+}) {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [selectedThinkingId, setSelectedThinkingId] = useState(null);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -14,6 +25,17 @@ export default function Playground({ chat, messages, setMessages, onUpdateChat, 
   };
 
   useEffect(scrollToBottom, [messages]);
+
+  useEffect(() => {
+    if (selectedThinkingId === null) {
+      return;
+    }
+
+    const selectedMessage = resolveThinkingMessage(messages, selectedThinkingId);
+    if (!selectedMessage || !selectedMessage.thinking) {
+      setSelectedThinkingId(null);
+    }
+  }, [messages, selectedThinkingId]);
 
   const handleInput = (e) => {
     setInput(e.target.value);
@@ -25,41 +47,52 @@ export default function Playground({ chat, messages, setMessages, onUpdateChat, 
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (chat) {
+        handleSend();
+      } else {
+        handleStartChat();
+      }
     }
   };
 
-  const handleSend = async () => {
-    const text = input.trim();
-    if (!text || isStreaming || !chat) return;
+  const sendMessage = async ({ text, targetChat, historySource = [] }) => {
+    if (!text || isStreaming || !targetChat) return;
 
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     setIsStreaming(true);
 
-    const isFirstMessage = messages.length === 0;
+    const isFirstMessage = historySource.length === 0;
 
-    const userMsg = { role: "user", content: text };
+    const pairId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    const userMsg = { id: `u-${pairId}`, role: "user", content: text };
     const assistantMsg = {
+      id: `a-${pairId}`,
       role: "assistant",
       content: "",
       thinking: "",
       isStreaming: true,
       thinkingDone: false,
+      thinkingStartedAt: Date.now(),
+      thinkingDurationMs: null,
     };
 
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
 
     // Update title in sidebar immediately for first message
     if (isFirstMessage) {
-      onUpdateChat(() => ({ title: text.slice(0, 40) }));
+      if (targetChat.id === chat?.id) {
+        onUpdateChat(() => ({ title: text.slice(0, 40) }));
+      } else {
+        onUpdateChatById?.(targetChat.id, () => ({ title: text.slice(0, 40) }));
+      }
     }
 
     let fullContent = "";
     let fullThinking = "";
 
     // Build history from existing messages (exclude the ones we just added)
-    const history = messages
+    const history = historySource
       .filter((m) => m.role === "user" || m.role === "assistant")
       .filter((m) => m.content && m.content.length > 0)
       .map((m) => ({ role: m.role, content: m.content }));
@@ -70,6 +103,10 @@ export default function Playground({ chat, messages, setMessages, onUpdateChat, 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text, history }),
       });
+
+      if (!response.ok || !response.body) {
+        throw new Error("Failed to stream response");
+      }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -106,6 +143,9 @@ export default function Playground({ chat, messages, setMessages, onUpdateChat, 
               const last = { ...msgs[msgs.length - 1] };
               if (!last.thinkingDone && last.thinking) {
                 last.thinkingDone = true;
+                if (!last.thinkingDurationMs && last.thinkingStartedAt) {
+                  last.thinkingDurationMs = Date.now() - last.thinkingStartedAt;
+                }
               }
               last.content += data.content;
               msgs[msgs.length - 1] = last;
@@ -133,6 +173,9 @@ export default function Playground({ chat, messages, setMessages, onUpdateChat, 
       const last = { ...msgs[msgs.length - 1] };
       last.isStreaming = false;
       last.thinkingDone = true;
+      if (!last.thinkingDurationMs && last.thinkingStartedAt) {
+        last.thinkingDurationMs = Date.now() - last.thinkingStartedAt;
+      }
       msgs[msgs.length - 1] = last;
       return msgs;
     });
@@ -142,7 +185,7 @@ export default function Playground({ chat, messages, setMessages, onUpdateChat, 
     // Save messages to backend
     try {
       await fetch(
-        `${API_BASE}/v1/chatbot/conversations/${USER_ID}/${chat.id}/messages`,
+        `${API_BASE}/v1/chatbot/conversations/${USER_ID}/${targetChat.id}/messages`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -162,7 +205,7 @@ export default function Playground({ chat, messages, setMessages, onUpdateChat, 
       const title = text.slice(0, 40);
       try {
         await fetch(
-          `${API_BASE}/v1/chatbot/conversations/${USER_ID}/${chat.id}/title`,
+          `${API_BASE}/v1/chatbot/conversations/${USER_ID}/${targetChat.id}/title`,
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -175,15 +218,59 @@ export default function Playground({ chat, messages, setMessages, onUpdateChat, 
     }
   };
 
+  const handleSend = async () => {
+    const text = input.trim();
+    if (!text || !chat) return;
+
+    await sendMessage({ text, targetChat: chat, historySource: messages });
+  };
+
+  const handleStartChat = async () => {
+    const text = input.trim();
+    if (!text || isStreaming) return;
+
+    const newChat = await onNewChat();
+    if (!newChat) return;
+
+    await sendMessage({ text, targetChat: newChat, historySource: [] });
+  };
+
+  const handleOpenThinking = (messageId) => {
+    setSelectedThinkingId(messageId);
+  };
+
+  const selectedThinkingMessage = resolveThinkingMessage(
+    messages,
+    selectedThinkingId
+  );
+
   if (!chat) {
     return (
       <main className="playground">
         <div className="playground-empty">
-          <h1>Agentic Chatbot</h1>
-          <p>Start a new conversation to begin</p>
-          <button className="start-btn" onClick={onNewChat}>
-            New Chat
-          </button>
+          <div className="empty-logo">
+            <EmptyStateLogo />
+          </div>
+          <h1>How can I help you today?</h1>
+          <p>Ask anything to start a new chat</p>
+          <div className="home-composer">
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={handleInput}
+              onKeyDown={handleKeyDown}
+              placeholder="Message Agentic Chatbot"
+              rows={1}
+            />
+            <button
+              className="send-btn"
+              onClick={handleStartChat}
+              disabled={isStreaming || !input.trim()}
+              aria-label="Send message"
+            >
+              &#8593;
+            </button>
+          </div>
         </div>
       </main>
     );
@@ -191,11 +278,63 @@ export default function Playground({ chat, messages, setMessages, onUpdateChat, 
 
   return (
     <main className="playground">
-      <div className="messages-area">
-        {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
-        ))}
-        <div ref={messagesEndRef} />
+      <div className="playground-header">
+        <div>
+          <h2>{chat.title || "New chat"}</h2>
+          <p>Assistant Playground</p>
+        </div>
+        <span className={`playground-status ${isStreaming ? "live" : ""}`}>
+          {isStreaming ? "Streaming" : "Ready"}
+        </span>
+      </div>
+
+      <div className="chat-content">
+        <div className="messages-area">
+          {messages.map((msg, i) => {
+            const messageKey = msg.id || `idx-${i}`;
+            return (
+              <MessageBubble
+                key={messageKey}
+                message={msg}
+                messageKey={messageKey}
+                isThinkingSelected={selectedThinkingId === messageKey}
+                onOpenThinking={handleOpenThinking}
+              />
+            );
+          })}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {selectedThinkingMessage && (
+          <aside className="thinking-sidebar">
+            <div className="thinking-sidebar-header">
+              <div>
+                <h3>Thought process</h3>
+                <p>
+                  {selectedThinkingMessage.isStreaming &&
+                  !selectedThinkingMessage.thinkingDone
+                    ? `Thinking: ${extractCurrentActivity(
+                        selectedThinkingMessage.thinking
+                      )}`
+                    : `Thought for ${formatThinkingDuration(
+                        selectedThinkingMessage.thinkingDurationMs
+                      )}`}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="thinking-sidebar-close"
+                onClick={() => setSelectedThinkingId(null)}
+                aria-label="Close thought panel"
+              >
+                &times;
+              </button>
+            </div>
+            <div className="thinking-sidebar-body">
+              <ThinkingDetail text={selectedThinkingMessage.thinking} />
+            </div>
+          </aside>
+        )}
       </div>
 
       <div className="input-area">
@@ -205,15 +344,16 @@ export default function Playground({ chat, messages, setMessages, onUpdateChat, 
             value={input}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
-            placeholder="Tulis pesan..."
+            placeholder="Message Agentic Chatbot"
             rows={1}
           />
           <button
             className="send-btn"
             onClick={handleSend}
             disabled={isStreaming || !input.trim()}
+            aria-label="Send message"
           >
-            Kirim
+            &#8593;
           </button>
         </div>
       </div>
@@ -221,9 +361,33 @@ export default function Playground({ chat, messages, setMessages, onUpdateChat, 
   );
 }
 
-function MessageBubble({ message }) {
-  const [collapsed, setCollapsed] = useState(false);
+function EmptyStateLogo() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <rect
+        x="2"
+        y="2"
+        width="60"
+        height="60"
+        rx="20"
+        fill="currentColor"
+        opacity="0.08"
+      />
+      <rect x="2" y="2" width="60" height="60" rx="20" stroke="currentColor" opacity="0.2" />
+      <path
+        d="M32 14L36.7 25.3L49 27L39.8 35.4L42.2 48L32 42L21.8 48L24.2 35.4L15 27L27.3 25.3L32 14Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
 
+function MessageBubble({
+  message,
+  messageKey,
+  isThinkingSelected,
+  onOpenThinking,
+}) {
   if (message.role === "user") {
     return <div className="message user">{message.content}</div>;
   }
@@ -236,8 +400,8 @@ function MessageBubble({ message }) {
   if (message.isStreaming && !hasThinking && !hasContent) {
     return (
       <div className="message assistant">
-        <div className="thinking-block active">
-          <div className="thinking-header">
+        <div className="thinking-pill active">
+          <div className="thinking-pill-main" aria-live="polite">
             <ThinkingSpinner />
             <span>Thinking...</span>
           </div>
@@ -249,36 +413,34 @@ function MessageBubble({ message }) {
   return (
     <div className="message assistant">
       {hasThinking && (
-        <div
-          className={`thinking-block ${isThinkingActive ? "active" : ""} ${
-            collapsed ? "collapsed" : ""
-          } ${!hasContent ? "only" : ""}`}
+        <button
+          type="button"
+          className={`thinking-pill ${isThinkingActive ? "active" : ""} ${
+            isThinkingSelected ? "selected" : ""
+          }`}
+          onClick={() => onOpenThinking?.(messageKey)}
+          aria-label="Open thought process panel"
         >
-          <div
-            className="thinking-header"
-            onClick={() => !isThinkingActive && setCollapsed((v) => !v)}
-          >
+          <span className="thinking-pill-main">
             {isThinkingActive ? (
               <ThinkingSpinner />
             ) : (
-              <span className={`arrow ${collapsed ? "right" : ""}`}>
-                &#9660;
-              </span>
+              <span className="thinking-dot" />
             )}
             <span>
-              {isThinkingActive ? "Thinking..." : "Thought process"}
+              {isThinkingActive
+                ? `Thinking: ${extractCurrentActivity(message.thinking)}`
+                : `Thought for ${formatThinkingDuration(message.thinkingDurationMs)}`}
             </span>
-          </div>
-          {!collapsed && (
-            <div className="thinking-content">
-              <ThinkingSteps text={message.thinking} isActive={isThinkingActive} />
-            </div>
-          )}
-        </div>
+          </span>
+          <span className="thinking-pill-open">Open</span>
+        </button>
       )}
       {hasContent && (
         <div className={`content-block ${!hasThinking ? "only" : ""}`}>
-          {message.content}
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+            {message.content}
+          </ReactMarkdown>
         </div>
       )}
     </div>
@@ -295,64 +457,82 @@ function ThinkingSpinner() {
   );
 }
 
-function ThinkingSteps({ text, isActive }) {
-  const lines = text.split("\n").filter((l) => l.trim() !== "");
+function ThinkingDetail({ text }) {
+  const lines = text.split("\n").filter((line) => line.trim() !== "");
 
   return (
-    <div className="thinking-steps">
-      {lines.map((line, i) => {
-        const isLast = i === lines.length - 1;
-        const isStep = isStepLine(line);
-        const isError = isErrorLine(line);
-        const isSql = line.startsWith("SQL:");
-
-        let cls = "step-line";
-        if (isError) cls += " step-error";
-        else if (isSql) cls += " step-sql";
-        else if (isStep) cls += " step-action";
-
-        return (
-          <div key={i} className={cls}>
-            {isStep && (
-              <span className="step-indicator">
-                {isActive && isLast ? (
-                  <span className="step-pulse" />
-                ) : isError ? (
-                  <span className="step-icon error">!</span>
-                ) : (
-                  <span className="step-icon done">&#10003;</span>
-                )}
-              </span>
-            )}
-            <span className="step-text">{line}</span>
-          </div>
-        );
-      })}
-    </div>
+    <ul className="thinking-detail-list">
+      {lines.map((line, index) => (
+        <li
+          key={index}
+          className={`thinking-detail-line ${line.startsWith("SQL:") ? "sql" : ""} ${
+            isThinkingErrorLine(line) ? "error" : ""
+          }`}
+        >
+          {line}
+        </li>
+      ))}
+    </ul>
   );
 }
 
-function isStepLine(line) {
-  const steps = [
-    "Routing to:",
-    "Introspecting",
-    "Found ",
-    "Generating SQL",
-    "Validating",
-    "Executing query",
-    "Query returned",
-    "Synthesizing",
-    "Retrying",
-    "Reasoning:",
-  ];
-  return steps.some((s) => line.startsWith(s));
+function formatThinkingDuration(durationMs) {
+  if (!durationMs || durationMs < 700) {
+    return "a few seconds";
+  }
+
+  const seconds = Math.max(1, Math.round(durationMs / 1000));
+  return `${seconds}s`;
 }
 
-function isErrorLine(line) {
+function extractCurrentActivity(thinkingText) {
+  if (!thinkingText) {
+    return "working";
+  }
+
+  const lines = thinkingText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 0) {
+    return "working";
+  }
+
+  const latestLine = lines[lines.length - 1];
+  if (latestLine.length <= 72) {
+    return latestLine;
+  }
+
+  return `${latestLine.slice(0, 72)}...`;
+}
+
+function isThinkingErrorLine(line) {
   return (
     line.startsWith("Parse error:") ||
     line.startsWith("Validation failed:") ||
     line.startsWith("Execution error:") ||
     line.startsWith("Error:")
+  );
+}
+
+function resolveThinkingMessage(messageList, selectionId) {
+  if (selectionId === null) {
+    return null;
+  }
+
+  if (String(selectionId).startsWith("idx-")) {
+    const index = Number(String(selectionId).slice(4));
+    const message = messageList[index];
+    if (message?.role === "assistant" && message.thinking) {
+      return message;
+    }
+    return null;
+  }
+
+  return (
+    messageList.find(
+      (m) => m.id === selectionId && m.role === "assistant" && m.thinking
+    ) || null
   );
 }

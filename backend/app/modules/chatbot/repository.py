@@ -1,139 +1,246 @@
-import json
 import time
-import uuid
 
-import redis
+from sqlmodel import Session, delete, select
+
+from app.core.database import app_engine
+from app.modules.chatbot.models import (
+    Conversation,
+    ConversationHistory,
+    ConversationMessage,
+)
 
 MAX_CONVERSATIONS = 20
 
 
 class ChatRepository:
-    def __init__(self, r: redis.Redis):
-        self.r = r
+    def __init__(self, engine=app_engine):
+        self.engine = engine
 
-    def _conv_set_key(self, user_id: str) -> str:
-        return f"user:{user_id}:conversations"
-
-    def _conv_hash_key(self, conversation_id: str) -> str:
-        return f"conversation:{conversation_id}"
-
-    def _conv_messages_key(self, conversation_id: str) -> str:
-        return f"conversation:{conversation_id}:messages"
-
-    def create_conversation(self, user_id: str, title: str = "New Chat") -> dict:
-        conversation_id = str(uuid.uuid4())
-        now = time.time()
-
-        conv = {
-            "id": conversation_id,
-            "user_id": user_id,
-            "title": title,
-            "created_at": now,
-            "updated_at": now,
+    @staticmethod
+    def _conversation_to_dict(conv: Conversation) -> dict:
+        return {
+            "id": conv.id,
+            "user_id": conv.user_id,
+            "title": conv.title,
+            "created_at": float(conv.created_at),
+            "updated_at": float(conv.updated_at),
         }
 
-        pipe = self.r.pipeline()
-        pipe.hset(self._conv_hash_key(conversation_id), mapping={k: str(v) for k, v in conv.items()})
-        pipe.zadd(self._conv_set_key(user_id), {conversation_id: now})
-        pipe.execute()
+    @staticmethod
+    def _history_to_dict(entry: ConversationHistory) -> dict:
+        return {
+            "id": int(entry.id) if entry.id is not None else 0,
+            "user_id": entry.user_id,
+            "conversation_id": entry.conversation_id,
+            "user_message": entry.user_message,
+            "assistant_content": entry.assistant_content,
+            "assistant_thinking": entry.assistant_thinking,
+            "created_at": float(entry.created_at),
+        }
 
-        self._enforce_max_conversations(user_id)
+    def create_conversation(self, user_id: str, title: str = "New Chat") -> dict:
+        now = time.time()
+        conversation = Conversation(
+            user_id=user_id,
+            title=title,
+            created_at=now,
+            updated_at=now,
+        )
 
-        return conv
+        with Session(self.engine) as session:
+            session.add(conversation)
+            session.commit()
+            session.refresh(conversation)
+            self._enforce_max_conversations(session, user_id)
+
+            return self._conversation_to_dict(conversation)
 
     def list_conversations(self, user_id: str) -> list[dict]:
-        conv_ids = self.r.zrevrange(self._conv_set_key(user_id), 0, -1)
-        conversations = []
-        for cid in conv_ids:
-            data = self.r.hgetall(self._conv_hash_key(cid))
-            if data:
-                data["created_at"] = float(data["created_at"])
-                data["updated_at"] = float(data["updated_at"])
-                conversations.append(data)
-        return conversations
+        with Session(self.engine) as session:
+            conversations = session.exec(
+                select(Conversation)
+                .where(Conversation.user_id == user_id)
+                .order_by(Conversation.updated_at.desc())
+            ).all()
+            return [self._conversation_to_dict(conv) for conv in conversations]
 
-    def get_conversation(self, conversation_id: str) -> dict | None:
-        data = self.r.hgetall(self._conv_hash_key(conversation_id))
-        if not data:
-            return None
+    def get_conversation(self, user_id: str, conversation_id: str) -> dict | None:
+        with Session(self.engine) as session:
+            conversation = session.exec(
+                select(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.user_id == user_id)
+            ).first()
+            if not conversation:
+                return None
 
-        data["created_at"] = float(data["created_at"])
-        data["updated_at"] = float(data["updated_at"])
+            messages = session.exec(
+                select(ConversationMessage)
+                .where(ConversationMessage.conversation_id == conversation_id)
+                .order_by(ConversationMessage.created_at.asc(), ConversationMessage.id.asc())
+            ).all()
 
-        raw_messages = self.r.lrange(self._conv_messages_key(conversation_id), 0, -1)
-        data["messages"] = [json.loads(m) for m in raw_messages]
-
-        return data
+            data = self._conversation_to_dict(conversation)
+            data["messages"] = []
+            for message in messages:
+                payload = {"role": message.role, "content": message.content}
+                if message.thinking:
+                    payload["thinking"] = message.thinking
+                data["messages"].append(payload)
+            return data
 
     def delete_conversation(self, user_id: str, conversation_id: str) -> bool:
-        existed = self.r.exists(self._conv_hash_key(conversation_id))
-        if not existed:
-            return False
+        with Session(self.engine) as session:
+            conversation = session.exec(
+                select(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.user_id == user_id)
+            ).first()
+            if not conversation:
+                return False
 
-        pipe = self.r.pipeline()
-        pipe.delete(self._conv_hash_key(conversation_id))
-        pipe.delete(self._conv_messages_key(conversation_id))
-        pipe.zrem(self._conv_set_key(user_id), conversation_id)
-        pipe.execute()
+            session.exec(
+                delete(ConversationMessage).where(
+                    ConversationMessage.conversation_id == conversation_id
+                )
+            )
+            session.exec(
+                delete(ConversationHistory).where(
+                    ConversationHistory.conversation_id == conversation_id
+                )
+            )
+            session.delete(conversation)
+            session.commit()
+            return True
 
-        return True
+    def update_conversation_title(self, user_id: str, conversation_id: str, title: str) -> bool:
+        with Session(self.engine) as session:
+            conversation = session.exec(
+                select(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.user_id == user_id)
+            ).first()
+            if not conversation:
+                return False
 
-    def update_conversation_title(self, conversation_id: str, title: str) -> bool:
-        if not self.r.exists(self._conv_hash_key(conversation_id)):
-            return False
-
-        now = time.time()
-        self.r.hset(self._conv_hash_key(conversation_id), mapping={
-            "title": title,
-            "updated_at": str(now),
-        })
-
-        user_id = self.r.hget(self._conv_hash_key(conversation_id), "user_id")
-        if user_id:
-            self.r.zadd(self._conv_set_key(user_id), {conversation_id: now})
-
-        return True
+            conversation.title = title
+            conversation.updated_at = time.time()
+            session.add(conversation)
+            session.commit()
+            return True
 
     def save_messages(
         self,
+        user_id: str,
         conversation_id: str,
         user_message: str,
         assistant_content: str,
         assistant_thinking: str | None = None,
     ) -> bool:
-        if not self.r.exists(self._conv_hash_key(conversation_id)):
-            return False
+        with Session(self.engine) as session:
+            conversation = session.exec(
+                select(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.user_id == user_id)
+            ).first()
+            if not conversation:
+                return False
 
-        user_msg = {"role": "user", "content": user_message}
-        assistant_msg = {"role": "assistant", "content": assistant_content}
-        if assistant_thinking:
-            assistant_msg["thinking"] = assistant_thinking
+            now = time.time()
+            session.add(
+                ConversationMessage(
+                    conversation_id=conversation_id,
+                    role="user",
+                    content=user_message,
+                    created_at=now,
+                )
+            )
+            session.add(
+                ConversationMessage(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=assistant_content,
+                    thinking=assistant_thinking,
+                    created_at=now,
+                )
+            )
+            session.add(
+                ConversationHistory(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    user_message=user_message,
+                    assistant_content=assistant_content,
+                    assistant_thinking=assistant_thinking,
+                    created_at=now,
+                )
+            )
+            conversation.updated_at = now
+            session.add(conversation)
+            session.commit()
+            return True
 
-        pipe = self.r.pipeline()
-        pipe.rpush(self._conv_messages_key(conversation_id), json.dumps(user_msg))
-        pipe.rpush(self._conv_messages_key(conversation_id), json.dumps(assistant_msg))
+    def list_history(
+        self,
+        user_id: str,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        with Session(self.engine) as session:
+            query = (
+                select(ConversationHistory)
+                .where(ConversationHistory.user_id == user_id)
+                .order_by(ConversationHistory.created_at.desc(), ConversationHistory.id.desc())
+                .limit(limit)
+            )
+            if conversation_id:
+                query = query.where(ConversationHistory.conversation_id == conversation_id)
 
-        now = time.time()
-        pipe.hset(self._conv_hash_key(conversation_id), "updated_at", str(now))
+            entries = session.exec(query).all()
+            return [self._history_to_dict(entry) for entry in entries]
 
-        user_id = self.r.hget(self._conv_hash_key(conversation_id), "user_id")
-        if user_id:
-            pipe.zadd(self._conv_set_key(user_id), {conversation_id: now})
+    def clear_history(self, user_id: str, conversation_id: str | None = None) -> int:
+        with Session(self.engine) as session:
+            query = select(ConversationHistory.id).where(ConversationHistory.user_id == user_id)
+            if conversation_id:
+                query = query.where(ConversationHistory.conversation_id == conversation_id)
 
-        pipe.execute()
+            ids = session.exec(query).all()
+            if not ids:
+                return 0
 
-        return True
+            delete_query = delete(ConversationHistory).where(ConversationHistory.user_id == user_id)
+            if conversation_id:
+                delete_query = delete_query.where(
+                    ConversationHistory.conversation_id == conversation_id
+                )
+            session.exec(delete_query)
+            session.commit()
+            return len(ids)
 
-    def _enforce_max_conversations(self, user_id: str):
-        key = self._conv_set_key(user_id)
-        count = self.r.zcard(key)
-        if count <= MAX_CONVERSATIONS:
+    def _enforce_max_conversations(self, session: Session, user_id: str) -> None:
+        conversations = session.exec(
+            select(Conversation)
+            .where(Conversation.user_id == user_id)
+            .order_by(Conversation.updated_at.desc())
+        ).all()
+
+        if len(conversations) <= MAX_CONVERSATIONS:
             return
 
-        to_remove = self.r.zrange(key, 0, count - MAX_CONVERSATIONS - 1)
-        pipe = self.r.pipeline()
-        for cid in to_remove:
-            pipe.delete(self._conv_hash_key(cid))
-            pipe.delete(self._conv_messages_key(cid))
-        pipe.zremrangebyrank(key, 0, count - MAX_CONVERSATIONS - 1)
-        pipe.execute()
+        stale_conversations = conversations[MAX_CONVERSATIONS:]
+        stale_ids = [conv.id for conv in stale_conversations]
+
+        session.exec(
+            delete(ConversationMessage).where(
+                ConversationMessage.conversation_id.in_(stale_ids)
+            )
+        )
+        session.exec(
+            delete(ConversationHistory).where(
+                ConversationHistory.conversation_id.in_(stale_ids)
+            )
+        )
+        for conversation in stale_conversations:
+            session.delete(conversation)
+
+        session.commit()
