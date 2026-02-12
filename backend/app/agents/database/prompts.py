@@ -204,7 +204,7 @@ Return JSON with "sql" and "explanation" only.\
 """
 
 RETRY_USER = """\
-The previous SQL failed with this error:
+The previous SQL failed with the following error:
 {error}
 
 Fix the query and return JSON with "sql" and "explanation" only.\

@@ -168,6 +168,70 @@ DEFAULT_PROMPTS: list[dict[str, str]] = [
         "variables": "",
     },
     {
+        "slug": "db_plan_system",
+        "agent": "planner",
+        "name": "DB Plan System",
+        "description": "Creates a short plan for the database query.",
+        "content": (
+            "You are Agent M's query planner.\n"
+            "Given a user question, produce a short plan for retrieving the data in ClickHouse.\n\n"
+            "Rules:\n"
+            '- Return JSON with keys: "steps" (list), "tables" (list), "filters" (list),\n'
+            '  "time_range" (string or null), "risk" (low|medium|high), "notes" (string).\n'
+            "- Keep it concise.\n"
+            "- Do not include SQL.\n"
+            "- Do not include markdown or code fences."
+        ),
+        "variables": "",
+    },
+    {
+        "slug": "db_plan_user",
+        "agent": "planner",
+        "name": "DB Plan User",
+        "description": "User prompt template for query planning.",
+        "content": (
+            "Question:\n"
+            "{question}\n\n"
+            "Return JSON only."
+        ),
+        "variables": "question",
+    },
+    {
+        "slug": "db_reflection_system",
+        "agent": "planner",
+        "name": "DB Reflection System",
+        "description": "Refines the database instruction after errors.",
+        "content": (
+            "You are Agent M's query reviewer.\n"
+            "Given the question, plan, previous instruction, and an error, return an improved instruction\n"
+            "for the Database Agent.\n\n"
+            "Rules:\n"
+            "- Output only the instruction text.\n"
+            "- Use imperative verbs (e.g., \"Ambil\", \"Hitung\", \"Tampilkan\").\n"
+            "- Keep it concise and specific (metrics, time range, filters).\n"
+            "- Do not include explanations, markdown, or code fences."
+        ),
+        "variables": "",
+    },
+    {
+        "slug": "db_reflection_user",
+        "agent": "planner",
+        "name": "DB Reflection User",
+        "description": "User prompt template for instruction reflection.",
+        "content": (
+            "Question:\n"
+            "{question}\n\n"
+            "Plan:\n"
+            "{plan}\n\n"
+            "Previous instruction:\n"
+            "{instruction}\n\n"
+            "Error:\n"
+            "{error}\n\n"
+            "Return only the instruction text."
+        ),
+        "variables": "question,plan,instruction,error",
+    },
+    {
         "slug": "nl_to_sql_system",
         "agent": "database",
         "name": "NL-to-SQL System",
