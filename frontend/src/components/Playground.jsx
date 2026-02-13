@@ -14,6 +14,7 @@ export default function Playground({
   onUpdateChat,
   onUpdateChatById,
   onNewChat,
+  theme,
 }) {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -305,6 +306,7 @@ export default function Playground({
                 messageKey={messageKey}
                 isThinkingSelected={selectedThinkingId === messageKey}
                 onOpenThinking={handleOpenThinking}
+                theme={theme}
               />
             );
           })}
@@ -393,6 +395,7 @@ function MessageBubble({
   messageKey,
   isThinkingSelected,
   onOpenThinking,
+  theme,
 }) {
   if (message.role === "user") {
     return <div className="message user">{message.content}</div>;
@@ -469,7 +472,9 @@ function MessageBubble({
           <p>{chartPayload.error}</p>
         </div>
       )}
-      {chartPayload?.chart && <ChartBlock chart={chartPayload.chart} />}
+      {chartPayload?.chart && (
+        <ChartBlock chart={chartPayload.chart} theme={theme} />
+      )}
     </div>
   );
 }
@@ -722,7 +727,7 @@ function formatChartNumber(val) {
   }).format(val);
 }
 
-function ChartBlock({ chart }) {
+function ChartBlock({ chart, theme }) {
   const type = normalizeChartType(chart?.type);
   const normalized = useMemo(() => normalizeApexSeries(chart, type), [chart, type]);
   const unit = chart?.unit || "";
@@ -731,7 +736,8 @@ function ChartBlock({ chart }) {
     const textMuted = getCssVar("--text-muted", "#717171");
     const textPrimary = getCssVar("--text-primary", "#141414");
     const border = getCssVar("--border", "#e8e8e8");
-    const isDark = getCurrentTheme() === "dark";
+    const resolvedTheme = theme || getCurrentTheme();
+    const isDark = resolvedTheme === "dark";
     const isSingleSeries = normalized.series.length <= 1;
 
     const baseOptions = {
@@ -755,6 +761,7 @@ function ChartBlock({ chart }) {
       dataLabels: { enabled: false },
       theme: { mode: isDark ? "dark" : "light" },
       tooltip: {
+        theme: isDark ? "dark" : "light",
         y: {
           formatter: (val) => formatChartNumber(val) + (unit ? ` ${unit}` : ""),
         },
@@ -779,7 +786,7 @@ function ChartBlock({ chart }) {
         dataLabels: {
           enabled: true,
           formatter: (val) => val.toFixed(1) + "%",
-          style: { fontSize: "12px", fontWeight: 500 },
+          style: { fontSize: "12px", fontWeight: 500, colors: [textPrimary] },
           dropShadow: { enabled: false },
         },
         plotOptions: {
@@ -824,11 +831,14 @@ function ChartBlock({ chart }) {
       xaxis: {
         type: "category",
         title: { text: chart?.x_label || "", style: { color: textPrimary } },
-        labels: { rotate: -25, style: { fontSize: "11px" } },
+        labels: { rotate: -25, style: { fontSize: "11px", colors: textMuted } },
+        axisBorder: { color: border },
+        axisTicks: { color: border },
       },
       yaxis: {
         title: { text: chart?.y_label || "", style: { color: textPrimary } },
         labels: {
+          style: { colors: textMuted },
           formatter: (val) => formatChartNumber(val),
         },
       },
@@ -857,7 +867,7 @@ function ChartBlock({ chart }) {
         hover: { size: 5, sizeOffset: 3 },
       },
     };
-  }, [chart, type, normalized.labels, normalized.series.length, unit]);
+  }, [chart, type, normalized.labels, normalized.series.length, unit, theme]);
 
   const height = type === "pie" ? 360 : 420;
 

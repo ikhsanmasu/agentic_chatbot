@@ -81,6 +81,9 @@ DEFAULT_PROMPTS: list[dict[str, str]] = [
             '- "agent" must be "database", "vector", "browser", "chart", "timeseries", "report", "compare", "alert", or "general".\n'
             '- "reasoning" must be short and concrete.\n'
             '- "routed_input" is a clarified version of user intent for the chosen agent.\n'
+            '- IMPORTANT: "routed_input" MUST preserve ALL proper nouns exactly as the user wrote them —\n'
+            "  site names, pond names, cycle numbers, brand names, person names.\n"
+            "  Example: user says \"chart panen arona teluk tomini\" → routed_input must keep \"arona teluk tomini\".\n"
             "- Do not return markdown or code fences."
         ),
         "variables": "message",
@@ -195,24 +198,27 @@ DEFAULT_PROMPTS: list[dict[str, str]] = [
         "name": "Chart DB Command System",
         "description": "Generates a database instruction to fetch chart-ready data.",
         "content": (
-            "You are Agent M, preparing data for a chart visualization on a shrimp-farm management platform.\n"
-            "Convert the user's request into a short, imperative instruction for the Database Agent.\n"
-            "The goal is to return chart-ready data (label + numeric value, optional series).\n\n"
-            "Domain terms:\n"
-            "- ABW (Average Body Weight, gram), ADG (Average Daily Growth, g/hari)\n"
-            "- SR (Survival Rate, %), FCR (Feed Conversion Ratio)\n"
-            "- DOC (Day of Culture), biomassa (kg), populasi (ekor)\n"
-            "- Water quality: DO (mg/L), pH, salinitas (ppt), NH4 (mg/L), NO2 (mg/L)\n"
-            "- pakan/feed (kg), panen/harvest (kg)\n\n"
-            "Data shape guidance:\n"
-            "- For TREND over time: include a date/DOC column, ORDER BY date ASC, LIMIT 60.\n"
-            "- For COMPARISON/RANKING: include a grouping column (pond name, site name) + aggregated metric.\n"
-            "- For DISTRIBUTION: include category column + count or sum.\n"
-            "- Always include the numeric column(s) the user wants to visualize.\n\n"
+            "You are Agent M, preparing data for a chart on a shrimp-farm management platform.\n"
+            "Convert the user's request into a SIMPLE, SHORT instruction for the Database Agent.\n\n"
+            "CRITICAL — keep the instruction simple:\n"
+            "- ONE sentence, maximum two sentences.\n"
+            "- Do NOT include aggregation logic, conditional logic, or calculation formulas.\n"
+            "- Do NOT specify SQL constructs (GROUP BY, SUM, IF, subquery).\n"
+            "- Let the Database Agent figure out the SQL — just describe WHAT data you need.\n"
+            "- Preserve the EXACT site/pond name from the user (e.g., \"Arona Teluk Tomini\", \"SUMA MARINA\").\n"
+            "  Use ILIKE or partial match if the name might not match exactly.\n\n"
+            "Pattern examples:\n"
+            "- \"Tampilkan data panen per bulan untuk site Arona Teluk Tomini 12 bulan terakhir, "
+            "kolom: bulan, total biomassa (kg), jumlah event panen.\"\n"
+            "- \"Ambil ABW harian kolam F1 30 hari terakhir, urutkan per tanggal.\"\n"
+            "- \"Hitung total pakan per kolam di site SUMA MARINA bulan ini.\"\n"
+            "- \"Tampilkan rata-rata FCR per kolam untuk semua kolam aktif.\"\n"
+            "- \"Ambil data DO dan pH harian kolam F3 seminggu terakhir.\"\n\n"
             "Rules:\n"
             "- Output only the instruction text.\n"
-            "- Use imperative verbs (e.g., \"Ambil\", \"Hitung\", \"Tampilkan\").\n"
-            "- Prefer aggregated results with clear grouping.\n"
+            "- Use imperative verbs (\"Ambil\", \"Hitung\", \"Tampilkan\").\n"
+            "- Include time range if the user mentions it, otherwise default to last 30 days.\n"
+            "- Request at most 50 rows (LIMIT 50).\n"
             "- Do not include explanations, markdown, or code fences.\n"
             "- Do not include <think> tags."
         ),
@@ -1053,10 +1059,15 @@ DEFAULT_PROMPTS: list[dict[str, str]] = [
             "   - status=2: selesai (sudah panen total)\n"
             "   - status=0: draft/belum mulai\n\n"
 
-            "10. NAMA KOLAM: Nama kolam di tabel ponds.name (contoh: F1, F2, A1, B3).\n"
-            "    Nama site di tabel sites.name (contoh: SUMA MARINA, LOMBOK).\n"
+            "10. NAMA KOLAM / SITE — pencarian HARUS case-insensitive:\n"
+            "    Nama kolam di tabel ponds.name (contoh: F1, F2, A1, B3).\n"
+            "    Nama site di tabel sites.name (contoh: SUMA MARINA, LOMBOK, ARONA TELUK TOMINI).\n"
             "    Jika user menyebut nama kolam, JOIN ke ponds dan filter by ponds.name.\n"
-            "    Jika user menyebut nama site, JOIN ke sites dan filter by sites.name.\n\n"
+            "    Jika user menyebut nama site, JOIN ke sites dan filter by sites.name.\n"
+            "    WAJIB gunakan ILIKE untuk pencarian nama agar case-insensitive dan partial match:\n"
+            "      BENAR:  WHERE s.name ILIKE '%teluk tomini%'\n"
+            "      BENAR:  WHERE p.name ILIKE 'F1'   (untuk nama pendek)\n"
+            "      SALAH:  WHERE s.name = 'teluk tomini'  ← TIDAK MATCH karena DB menyimpan UPPERCASE!\n\n"
 
             "═══════════════════\n"
             "EXAMPLE QUERIES\n"

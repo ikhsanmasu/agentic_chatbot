@@ -199,6 +199,7 @@ export default function App() {
             }
             onUpdateChatById={(chatId, updater) => updateChat(chatId, updater)}
             onNewChat={createNewChat}
+            theme={theme}
           />
         );
     }

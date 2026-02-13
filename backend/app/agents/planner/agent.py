@@ -3,6 +3,8 @@ import logging
 import re
 from collections.abc import Generator
 
+from sqlmodel import text
+
 from app.agents.alert.agent import AlertAgent
 from app.agents.base import AgentResult, BaseAgent
 from app.agents.browser.agent import BrowserAgent
@@ -25,11 +27,40 @@ from app.agents.planner.schemas import (
 from app.agents.timeseries.agent import TimeSeriesAgent
 from app.agents.vector.agent import VectorAgent
 from app.agents.planner.streaming import parse_think_tags
+from app.core.database import clickhouse_engine
 from app.core.llm.base import BaseLLM
 from app.core.llm.schemas import GenerateConfig
 from app.modules.admin.service import resolve_config, resolve_prompt
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Domain cheatsheet — condensed reference injected into routing & command prompts
+# so the planner knows what data exists without needing the full SQL schema.
+# ---------------------------------------------------------------------------
+DOMAIN_CONTEXT = (
+    "DATA YANG TERSEDIA DI PLATFORM:\n"
+    "Hierarchy: Site (lokasi tambak) → Pond (kolam) → Cultivation (siklus budidaya)\n\n"
+    "Metrik KPI:\n"
+    "- ABW (gram), ADG (g/hari), SR (%), FCR, DOC (hari), biomassa (kg)\n"
+    "- size (ekor/kg), produktivitas (ton/ha), populasi (ekor)\n\n"
+    "Kualitas air:\n"
+    "- DO (mg/L), pH, salinitas (ppt), suhu (°C), NH4/ammonium (mg/L)\n"
+    "- NO2/nitrit (mg/L), alkalinitas, kecerahan\n\n"
+    "Data tersedia:\n"
+    "- Tebar benur (tanggal, jumlah, asal benur)\n"
+    "- Sampling udang harian (ABW, ADG, SR, biomassa)\n"
+    "- Pakan harian (jumlah pakan, FCR, merek pakan)\n"
+    "- Panen (parsial & total — biomassa, size, ABW, SR, FCR, produktivitas)\n"
+    "- Kualitas air harian (fisika, kimia, biologi)\n"
+    "- Treatment & obat, persiapan kolam, transfer udang\n"
+    "- Alert/alarm, energi, harga udang pasar\n\n"
+    "Report views (data sudah di-aggregate, lebih cepat):\n"
+    "- site_pond_latest_report — KPI terkini per kolam\n"
+    "- budidaya_report — ringkasan KPI per siklus\n"
+    "- budidaya_panen_report_v2 — detail panen\n"
+    "- cultivation_water_report — kualitas air harian konsolidasi\n"
+)
 
 
 class PlannerAgent(BaseAgent):
@@ -55,15 +86,54 @@ class PlannerAgent(BaseAgent):
         self.compare_agent = compare_agent
         self.alert_agent = alert_agent
 
+    # ------------------------------------------------------------------
+    # Entity resolution — fetch real site names from ClickHouse so the
+    # routing LLM can map user input to exact names.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fetch_entity_context() -> str:
+        """Fetch active site names directly from ClickHouse (no LLM call)."""
+        try:
+            with clickhouse_engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT DISTINCT name "
+                        "FROM cultivation.sites AS s FINAL "
+                        "WHERE s.deleted_by = 0 AND s.status = 1 "
+                        "ORDER BY name"
+                    )
+                ).fetchall()
+            site_names = [str(row[0]) for row in rows if row[0]]
+            if not site_names:
+                return ""
+            return (
+                "SITE AKTIF DI DATABASE:\n"
+                + ", ".join(site_names)
+                + "\n\n"
+                "Jika user menyebut nama site secara parsial atau tidak tepat, "
+                "cocokkan ke nama LENGKAP dari daftar di atas.\n"
+                "Contoh: user bilang 'teluk tomini' → gunakan 'ARONA TELUK TOMINI'.\n"
+                "Contoh: user bilang 'suma' → gunakan 'SUMA MARINA'.\n"
+                "SELALU gunakan nama site PERSIS dari daftar di atas di routed_input."
+            )
+        except Exception as exc:
+            logger.warning("Failed to fetch entity context: %s", exc)
+            return ""
+
     def _build_db_plan_messages(self, user_message: str) -> list[dict[str, str]]:
         return [
             {"role": "system", "content": resolve_prompt("db_plan_system")},
             {"role": "user", "content": resolve_prompt("db_plan_user").format(question=user_message)},
         ]
 
-    def _build_routing_messages(self, user_message: str) -> list[dict[str, str]]:
+    def _build_routing_messages(self, user_message: str, entity_context: str = "") -> list[dict[str, str]]:
+        system_content = resolve_prompt("routing_system")
+        if entity_context:
+            system_content += "\n\n" + entity_context
+        system_content += "\n\n" + DOMAIN_CONTEXT
         return [
-            {"role": "system", "content": resolve_prompt("routing_system")},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": resolve_prompt("routing_user").format(message=user_message)},
         ]
 
@@ -97,9 +167,12 @@ class PlannerAgent(BaseAgent):
             )},
         ]
 
-    def _build_db_command_messages(self, user_message: str) -> list[dict[str, str]]:
+    def _build_db_command_messages(self, user_message: str, entity_context: str = "") -> list[dict[str, str]]:
+        system_content = resolve_prompt("db_command_system")
+        if entity_context:
+            system_content += "\n\n" + entity_context
         return [
-            {"role": "system", "content": resolve_prompt("db_command_system")},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": resolve_prompt("db_command_user").format(message=user_message)},
         ]
 
@@ -213,8 +286,8 @@ class PlannerAgent(BaseAgent):
         output = db_result.output or ""
         return isinstance(output, str) and output.strip().startswith("Error:")
 
-    def _route_message(self, user_message: str) -> RoutingDecision:
-        messages = self._build_routing_messages(user_message)
+    def _route_message(self, user_message: str, entity_context: str = "") -> RoutingDecision:
+        messages = self._build_routing_messages(user_message, entity_context=entity_context)
         config = GenerateConfig(temperature=0)
         response = self.llm.generate(messages=messages, config=config)
 
@@ -232,7 +305,8 @@ class PlannerAgent(BaseAgent):
             )
 
     def execute(self, input_text: str, context: dict | None = None, history: list[dict] | None = None) -> AgentResult:
-        decision = self._route_message(input_text)
+        entity_context = self._fetch_entity_context()
+        decision = self._route_message(input_text, entity_context=entity_context)
         if not self._is_agent_enabled(decision.target_agent):
             return AgentResult(
                 output=self._disabled_agent_message(decision.target_agent),
@@ -261,7 +335,7 @@ class PlannerAgent(BaseAgent):
             command_input = decision.routed_input
             if plan_summary:
                 command_input = f"{decision.routed_input}\n\nRencana:\n{plan_summary}"
-            command_messages = self._build_db_command_messages(command_input)
+            command_messages = self._build_db_command_messages(command_input, entity_context=entity_context)
             command_config = GenerateConfig(temperature=0)
             command_response = self.llm.generate(messages=command_messages, config=command_config)
             db_instruction = self._strip_think_tags(command_response.text)
@@ -437,7 +511,8 @@ class PlannerAgent(BaseAgent):
         )
 
     def execute_stream(self, input_text: str, context: dict | None = None, history: list[dict] | None = None) -> Generator[dict, None, None]:
-        decision = self._route_message(input_text)
+        entity_context = self._fetch_entity_context()
+        decision = self._route_message(input_text, entity_context=entity_context)
 
         # Emit routing decision as thinking
         yield {
@@ -475,7 +550,7 @@ class PlannerAgent(BaseAgent):
             command_input = decision.routed_input
             if plan_summary:
                 command_input = f"{decision.routed_input}\n\nRencana:\n{plan_summary}"
-            command_messages = self._build_db_command_messages(command_input)
+            command_messages = self._build_db_command_messages(command_input, entity_context=entity_context)
             command_config = GenerateConfig(temperature=0)
             command_response = self.llm.generate(messages=command_messages, config=command_config)
             db_instruction = self._strip_think_tags(command_response.text)

@@ -222,9 +222,13 @@ class ChartAgent(BaseAgent):
             yield {"type": "content", "content": f"Error: {db_result.output}"}
             return
 
-        # Show DB output snippet in thinking for debugging
-        db_output_preview = str(db_result.output)[:500]
-        yield {"type": "thinking", "content": f"Data diterima:\n{db_output_preview}\n\n"}
+        # Show DB output in thinking for debugging
+        db_output_str = str(db_result.output)
+        # Show SQL (first line) and the table part (after blank line)
+        parts = db_output_str.split("\n\n", 1)
+        header_part = parts[0][:300] if parts else ""
+        table_part = parts[1][:400] if len(parts) > 1 else "(no table section)"
+        yield {"type": "thinking", "content": f"DB output header:\n{header_part}\n\nDB output table:\n{table_part}\n\n"}
 
         columns, rows, parse_hint = self._parse_table(db_result.output)
         if not columns or not rows:
