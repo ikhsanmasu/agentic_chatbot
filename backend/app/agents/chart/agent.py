@@ -47,24 +47,31 @@ class ChartAgent(BaseAgent):
                 "content": resolve_prompt("chart_spec_user").format(
                     question=question,
                     columns=", ".join(columns),
-                    rows=json.dumps(rows, ensure_ascii=True),
+                    rows=json.dumps(rows, ensure_ascii=False),
                 ),
             },
         ]
 
     @staticmethod
-    def _parse_table(output: str) -> tuple[list[str], list[list[str]]]:
+    def _parse_table(output: str) -> tuple[list[str], list[list[str]], str]:
+        """Parse pipe-delimited table from DatabaseAgent output.
+
+        Returns (columns, rows, parse_hint) where parse_hint explains
+        why parsing failed (empty string on success).
+        """
         if "(no rows returned)" in output:
-            return [], []
+            return [], [], "Database returned no rows for this query."
         parts = output.split("\n\n")
         if len(parts) < 2:
-            return [], []
+            return [], [], f"Unexpected DB output format (no table section). Raw: {output[:200]}"
         table_block = parts[-1].strip()
-        if not table_block or table_block.startswith("Error:"):
-            return [], []
+        if not table_block:
+            return [], [], "Table section is empty."
+        if table_block.startswith("Error:"):
+            return [], [], f"DB error: {table_block[:200]}"
         lines = [line for line in table_block.splitlines() if line.strip()]
         if len(lines) < 2:
-            return [], []
+            return [], [], f"Table has fewer than 2 lines. Got: {table_block[:200]}"
         columns = [c.strip() for c in lines[0].split(" | ")]
         rows: list[list[str]] = []
         for line in lines[2:]:
@@ -72,7 +79,9 @@ class ChartAgent(BaseAgent):
             if len(row) != len(columns):
                 continue
             rows.append(row)
-        return columns, rows
+        if not rows:
+            return columns, [], f"Parsed header ({', '.join(columns)}) but no valid data rows."
+        return columns, rows, ""
 
     @staticmethod
     def _rows_to_objects(columns: list[str], rows: list[list[str]]) -> list[dict[str, Any]]:
@@ -172,16 +181,17 @@ class ChartAgent(BaseAgent):
                 },
             )
 
-        columns, rows = self._parse_table(db_result.output)
+        columns, rows, parse_hint = self._parse_table(db_result.output)
         if not columns or not rows:
-            payload = {"error": "No data available to build chart."}
+            error_msg = parse_hint or "No data available to build chart."
+            payload = {"error": error_msg}
             return AgentResult(
-                output=json.dumps(payload, ensure_ascii=True),
-                metadata={"error": payload["error"], "db_instruction": db_instruction},
+                output=json.dumps(payload, ensure_ascii=False),
+                metadata={"error": error_msg, "db_instruction": db_instruction},
             )
 
         chart_payload = self._build_chart_spec(question, columns, rows)
-        output = json.dumps(chart_payload, ensure_ascii=True)
+        output = json.dumps(chart_payload, ensure_ascii=False)
         return AgentResult(
             output=output,
             metadata={
@@ -206,20 +216,32 @@ class ChartAgent(BaseAgent):
 
         yield {"type": "thinking", "content": "Menarik data dari database...\n"}
         db_result = self.database_agent.execute(db_instruction)
+
         if db_result.metadata.get("error") or str(db_result.output).startswith("Error:"):
+            yield {"type": "thinking", "content": f"Error dari database: {str(db_result.output)[:300]}\n\n"}
             yield {"type": "content", "content": f"Error: {db_result.output}"}
             return
 
-        columns, rows = self._parse_table(db_result.output)
+        # Show DB output snippet in thinking for debugging
+        db_output_preview = str(db_result.output)[:500]
+        yield {"type": "thinking", "content": f"Data diterima:\n{db_output_preview}\n\n"}
+
+        columns, rows, parse_hint = self._parse_table(db_result.output)
         if not columns or not rows:
-            payload = {"error": "No data available to build chart."}
-            result = AgentResult(output=json.dumps(payload, ensure_ascii=True), metadata={"error": payload["error"]})
+            error_msg = parse_hint or "No data available to build chart."
+            yield {"type": "thinking", "content": f"Parse gagal: {error_msg}\n\n"}
+            payload = {"error": error_msg}
+            result = AgentResult(
+                output=json.dumps(payload, ensure_ascii=False),
+                metadata={"error": error_msg, "db_instruction": db_instruction},
+            )
             yield {"type": "_result", "data": result}
             return
 
+        yield {"type": "thinking", "content": f"Data parsed: {len(rows)} baris, kolom: {', '.join(columns)}\n\n"}
         yield {"type": "thinking", "content": "Menyusun spesifikasi chart...\n"}
         chart_payload = self._build_chart_spec(question, columns, rows)
-        output = json.dumps(chart_payload, ensure_ascii=True)
+        output = json.dumps(chart_payload, ensure_ascii=False)
         result = AgentResult(
             output=output,
             metadata={

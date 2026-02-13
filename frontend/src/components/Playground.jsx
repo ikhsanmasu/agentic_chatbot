@@ -628,22 +628,7 @@ function ReportBlock({ report }) {
   const [showPreview, setShowPreview] = useState(true);
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const rawFilename = report?.filename || "report.md";
-  const mdFilename = rawFilename.toLowerCase().endsWith(".md")
-    ? rawFilename
-    : "report.md";
   const content = report?.content || "";
-
-  const handleDownload = () => {
-    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = mdFilename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  };
 
   const handleDownloadPdf = async () => {
     if (isDownloadingPdf) return;
@@ -657,17 +642,23 @@ function ReportBlock({ report }) {
       return;
     }
 
-    if (!report?.query) {
-      handleDownload();
+    if (!report?.content) {
       return;
     }
 
     try {
       setIsDownloadingPdf(true);
-      const response = await fetch(`${API_BASE}/v1/report/generate`, {
+      const response = await fetch(`${API_BASE}/v1/report/pdf`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: report.query, format: "pdf" }),
+        body: JSON.stringify({
+          report: {
+            title: report?.title || "Report",
+            period: report?.period || "",
+            content: report?.content || "",
+            filename: report?.filename || "report.pdf",
+          },
+        }),
       });
       if (!response.ok) {
         throw new Error("Failed to generate PDF");
@@ -681,10 +672,8 @@ function ReportBlock({ report }) {
         downloadBase64File(data.report.pdf_base64, resolvedName, "application/pdf");
         return;
       }
-      handleDownload();
     } catch (err) {
       console.error(err);
-      handleDownload();
     } finally {
       setIsDownloadingPdf(false);
     }
@@ -704,9 +693,6 @@ function ReportBlock({ report }) {
             onClick={() => setShowPreview((prev) => !prev)}
           >
             {showPreview ? "Hide preview" : "Show preview"}
-          </button>
-          <button type="button" className="report-btn" onClick={handleDownload}>
-            Download MD
           </button>
           <button
             type="button"
@@ -729,22 +715,32 @@ function ReportBlock({ report }) {
   );
 }
 
+function formatChartNumber(val) {
+  if (val === null || val === undefined) return "0";
+  return new Intl.NumberFormat("id-ID", {
+    maximumFractionDigits: 2,
+  }).format(val);
+}
+
 function ChartBlock({ chart }) {
   const type = normalizeChartType(chart?.type);
   const normalized = useMemo(() => normalizeApexSeries(chart, type), [chart, type]);
+  const unit = chart?.unit || "";
 
   const options = useMemo(() => {
     const textMuted = getCssVar("--text-muted", "#717171");
     const textPrimary = getCssVar("--text-primary", "#141414");
     const border = getCssVar("--border", "#e8e8e8");
     const isDark = getCurrentTheme() === "dark";
+    const isSingleSeries = normalized.series.length <= 1;
 
     const baseOptions = {
       chart: {
-        type,
+        type: type === "area" ? "area" : type,
         toolbar: { show: false },
         foreColor: textMuted,
         fontFamily: "Inter, Segoe UI, sans-serif",
+        background: "transparent",
       },
       colors: CHART_COLORS,
       grid: {
@@ -752,57 +748,133 @@ function ChartBlock({ chart }) {
         strokeDashArray: 4,
       },
       legend: {
-        show: type !== "bar" || normalized.series.length > 1,
+        show: type === "pie" || !isSingleSeries,
         position: "bottom",
         labels: { colors: textMuted },
       },
       dataLabels: { enabled: false },
       theme: { mode: isDark ? "dark" : "light" },
+      tooltip: {
+        y: {
+          formatter: (val) => formatChartNumber(val) + (unit ? ` ${unit}` : ""),
+        },
+      },
+      responsive: [
+        {
+          breakpoint: 640,
+          options: {
+            chart: { height: 300 },
+            xaxis: { labels: { style: { fontSize: "10px" } } },
+            yaxis: { labels: { style: { fontSize: "10px" } } },
+          },
+        },
+      ],
     };
 
+    // Pie / Donut
     if (type === "pie") {
       return {
         ...baseOptions,
         labels: normalized.labels,
+        dataLabels: {
+          enabled: true,
+          formatter: (val) => val.toFixed(1) + "%",
+          style: { fontSize: "12px", fontWeight: 500 },
+          dropShadow: { enabled: false },
+        },
+        plotOptions: {
+          pie: {
+            donut: { size: "58%" },
+            expandOnClick: true,
+          },
+        },
+        tooltip: {
+          y: {
+            formatter: (val) => formatChartNumber(val) + (unit ? ` ${unit}` : ""),
+          },
+        },
       };
     }
 
+    // Build annotations from chart.annotations
+    const annotations = {};
+    if (Array.isArray(chart?.annotations) && chart.annotations.length > 0) {
+      annotations.yaxis = chart.annotations.map((a) => ({
+        y: a.y,
+        borderColor: a.color || "#ef4444",
+        strokeDashArray: 4,
+        label: {
+          text: a.label || "",
+          position: "left",
+          borderColor: a.color || "#ef4444",
+          style: {
+            color: "#fff",
+            background: a.color || "#ef4444",
+            fontSize: "11px",
+            padding: { left: 6, right: 6, top: 2, bottom: 2 },
+          },
+        },
+      }));
+    }
+
+    // Bar / Line / Area
     return {
       ...baseOptions,
+      annotations,
       xaxis: {
         type: "category",
         title: { text: chart?.x_label || "", style: { color: textPrimary } },
-        labels: { rotate: -25 },
+        labels: { rotate: -25, style: { fontSize: "11px" } },
       },
       yaxis: {
         title: { text: chart?.y_label || "", style: { color: textPrimary } },
+        labels: {
+          formatter: (val) => formatChartNumber(val),
+        },
       },
       plotOptions: {
         bar: {
-          borderRadius: 6,
-          columnWidth: "55%",
+          borderRadius: 4,
+          columnWidth: isSingleSeries ? "50%" : "55%",
+          distributed: isSingleSeries && type === "bar",
         },
       },
       stroke: {
         curve: "smooth",
-        width: type === "line" ? 3 : 0,
+        width: type === "bar" ? 0 : 3,
+      },
+      fill: {
+        type: type === "area" ? "gradient" : "solid",
+        gradient: {
+          shadeIntensity: 1,
+          opacityFrom: 0.3,
+          opacityTo: 0.05,
+          stops: [0, 90, 100],
+        },
+      },
+      markers: {
+        size: 0,
+        hover: { size: 5, sizeOffset: 3 },
       },
     };
-  }, [chart, type, normalized.labels, normalized.series.length]);
+  }, [chart, type, normalized.labels, normalized.series.length, unit]);
 
   const height = type === "pie" ? 360 : 420;
 
   return (
     <div className="chart-block">
       <div className="chart-header">
-        <h4>{chart?.title || "Chart"}</h4>
-        {chart?.unit && <span className="chart-unit">{chart.unit}</span>}
+        <div>
+          <h4>{chart?.title || "Chart"}</h4>
+          {chart?.subtitle && <p className="chart-subtitle">{chart.subtitle}</p>}
+        </div>
+        {unit && <span className="chart-unit">{unit}</span>}
       </div>
       <div className="chart-canvas">
         <Chart
           options={options}
           series={normalized.series}
-          type={type}
+          type={type === "area" ? "area" : type}
           height={height}
           width="100%"
         />
@@ -812,16 +884,18 @@ function ChartBlock({ chart }) {
 }
 
 const CHART_COLORS = [
-  "#0f172a",
-  "#1d4ed8",
-  "#0f766e",
-  "#b45309",
-  "#6d28d9",
-  "#be123c",
+  "#2563eb",
+  "#16a34a",
+  "#f59e0b",
+  "#ef4444",
+  "#8b5cf6",
+  "#06b6d4",
+  "#ec4899",
+  "#f97316",
 ];
 
 function normalizeChartType(type) {
-  if (type === "line" || type === "pie") return type;
+  if (type === "line" || type === "pie" || type === "area") return type;
   return "bar";
 }
 

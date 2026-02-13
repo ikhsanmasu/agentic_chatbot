@@ -858,6 +858,14 @@ body {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
+  margin: 0;
+}
+
+.chart-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 2px 0 0;
+  font-weight: 400;
 }
 
 .chart-unit {

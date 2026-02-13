@@ -8,6 +8,10 @@ class ReportRequest(BaseModel):
     format: Literal["markdown", "pdf"] | None = None
 
 
+class ReportPdfRequest(BaseModel):
+    report: dict
+
+
 class ReportResponse(BaseModel):
     status: str
     report: dict | None = None

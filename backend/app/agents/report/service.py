@@ -4,7 +4,7 @@ import re
 from collections.abc import Generator
 
 from app.agents.report import create_report_agent
-from app.agents.report.api_schemas import ReportRequest, ReportResponse
+from app.agents.report.api_schemas import ReportPdfRequest, ReportRequest, ReportResponse
 from app.agents.report.pdf import build_report_pdf
 
 
@@ -58,6 +58,17 @@ def generate_report(request: ReportRequest) -> ReportResponse:
             report, pdf_error = _attach_pdf(report)
             if pdf_error:
                 error = pdf_error
+    status = "success" if report and not error else "error"
+    return ReportResponse(status=status, report=report, error=error)
+
+
+def generate_report_pdf(request: ReportPdfRequest) -> ReportResponse:
+    report = request.report or {}
+    if not isinstance(report, dict):
+        return ReportResponse(status="error", error="Invalid report payload.")
+    if not report.get("content"):
+        return ReportResponse(status="error", error="Report content is missing.")
+    report, error = _attach_pdf(report)
     status = "success" if report and not error else "error"
     return ReportResponse(status=status, report=report, error=error)
 

@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 MAX_SECTIONS = 6
 MAX_ROWS = 50
+MAX_CONCURRENT_SECTIONS = 1
+GENERIC_SECTION_ERROR = "Data tidak tersedia atau terjadi error sistem."
 
 
 class ReportAgent(BaseAgent):
@@ -105,6 +107,36 @@ class ReportAgent(BaseAgent):
             body_lines.append("| " + " | ".join(row) + " |")
         return "\n".join([header, sep] + body_lines)
 
+    def _run_section(self, idx: int, section: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        title = str(section.get("title") or f"Bagian {idx + 1}")
+        instruction = str(section.get("instruction") or "").strip()
+        if not instruction:
+            return idx, {"title": title, "error": GENERIC_SECTION_ERROR}
+        try:
+            db_result = self.database_agent.execute(instruction)
+        except Exception as exc:  # pragma: no cover - defensive
+            return idx, {
+                "title": title,
+                "instruction": instruction,
+                "error": GENERIC_SECTION_ERROR,
+            }
+
+        if db_result.metadata.get("error") or str(db_result.output).startswith("Error:"):
+            return idx, {
+                "title": title,
+                "instruction": instruction,
+                "error": GENERIC_SECTION_ERROR,
+            }
+
+        columns, rows = self._parse_table(db_result.output)
+        return idx, {
+            "title": title,
+            "instruction": instruction,
+            "columns": columns,
+            "rows": rows[:MAX_ROWS],
+            "row_count": len(rows),
+        }
+
     def _fallback_report(self, plan: dict[str, Any], sections: list[dict[str, Any]]) -> dict[str, Any]:
         title = plan.get("title") or "Laporan Operasional"
         period = plan.get("period") or ""
@@ -165,37 +197,12 @@ class ReportAgent(BaseAgent):
         if not plan:
             return AgentResult(output="Error: Failed to create report plan.", metadata={"error": "plan"})
 
+        plan_sections = plan.get("sections", [])[:MAX_SECTIONS]
+
         section_results: list[dict[str, Any]] = []
-        for section in plan.get("sections", [])[:MAX_SECTIONS]:
-            title = str(section.get("title") or "Bagian")
-            instruction = str(section.get("instruction") or "").strip()
-            if not instruction:
-                section_results.append(
-                    {"title": title, "error": "Instruksi kosong."}
-                )
-                continue
-
-            db_result = self.database_agent.execute(instruction)
-            if db_result.metadata.get("error") or str(db_result.output).startswith("Error:"):
-                section_results.append(
-                    {
-                        "title": title,
-                        "instruction": instruction,
-                        "error": str(db_result.output),
-                    }
-                )
-                continue
-
-            columns, rows = self._parse_table(db_result.output)
-            section_results.append(
-                {
-                    "title": title,
-                    "instruction": instruction,
-                    "columns": columns,
-                    "rows": rows[:MAX_ROWS],
-                    "row_count": len(rows),
-                }
-            )
+        for idx, section in enumerate(plan_sections):
+            _, payload = self._run_section(idx, section)
+            section_results.append(payload)
 
         report_payload = self._attach_query(
             self._compile_report(question, plan, section_results), question
@@ -222,37 +229,23 @@ class ReportAgent(BaseAgent):
             yield {"type": "content", "content": "Error: Failed to create report plan."}
             return
 
+        plan_sections = plan.get("sections", [])[:MAX_SECTIONS]
+        if not plan_sections:
+            yield {"type": "content", "content": "Error: Laporan tidak memiliki bagian data."}
+            return
+
         section_results: list[dict[str, Any]] = []
-        for idx, section in enumerate(plan.get("sections", [])[:MAX_SECTIONS], start=1):
-            title = str(section.get("title") or f"Bagian {idx}")
-            instruction = str(section.get("instruction") or "").strip()
+        for idx, section in enumerate(plan_sections):
+            title = str(section.get("title") or f"Bagian {idx + 1}")
             yield {"type": "thinking", "content": f"Mengambil data: {title}\n"}
-
-            if not instruction:
-                section_results.append({"title": title, "error": "Instruksi kosong."})
-                continue
-
-            db_result = self.database_agent.execute(instruction)
-            if db_result.metadata.get("error") or str(db_result.output).startswith("Error:"):
-                section_results.append(
-                    {
-                        "title": title,
-                        "instruction": instruction,
-                        "error": str(db_result.output),
-                    }
-                )
-                continue
-
-            columns, rows = self._parse_table(db_result.output)
-            section_results.append(
-                {
-                    "title": title,
-                    "instruction": instruction,
-                    "columns": columns,
-                    "rows": rows[:MAX_ROWS],
-                    "row_count": len(rows),
-                }
-            )
+            _, payload = self._run_section(idx, section)
+            section_results.append(payload)
+            if payload.get("error"):
+                yield {"type": "thinking", "content": f"Gagal: {title}\n"}
+            else:
+                row_count = payload.get("row_count")
+                suffix = f"{row_count} baris" if row_count is not None else "selesai"
+                yield {"type": "thinking", "content": f"Selesai: {title} ({suffix}).\n"}
 
         yield {"type": "thinking", "content": "Menyusun dokumen laporan...\n"}
         report_payload = self._attach_query(
