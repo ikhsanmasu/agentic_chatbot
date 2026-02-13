@@ -8,12 +8,20 @@ Decide which agent should handle the user message:
   comparison between ponds/cycles, and any count/list/statistics from records.
 - "vector": Requests to retrieve similar documents/items from the vector database.
   Examples: semantic search, retrieve top-K matches by vector, RAG document lookup.
+- "browser": Requests that require up-to-date information from the public internet.
+  Examples: latest news, policy changes, prices, or facts that need web verification.
+- "chart": Requests that ask for a chart or visualization of data.
+  Examples: trend chart, bar chart per site, pie chart distribution.
+- "timeseries": Requests that need time-series analysis, trend computation, forecasting,
+  or aggregated time-bucket analysis beyond a single query result.
+- "report": Requests to compile a structured report (weekly/monthly per site, export-ready)
+  that combines multiple queries into one document.
 - "general": Conceptual or advisory questions that can be answered without querying data.
   Examples: explain FCR, SOP discussion, general best practices, definitions.
 
 Rules:
 - Return JSON with exactly 3 keys: "agent", "reasoning", "routed_input".
-- "agent" must be "database", "vector", or "general".
+- "agent" must be "database", "vector", "browser", "chart", "timeseries", "report", or "general".
 - "reasoning" must be short and concrete.
 - "routed_input" is a clarified version of user intent for the chosen agent.
 - Do not return markdown or code fences.

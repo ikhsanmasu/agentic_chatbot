@@ -18,6 +18,34 @@ const GROUP_META = {
       model: { label: "Model", type: "select" },
     },
   },
+  llm_browser: {
+    label: "Model",
+    fields: {
+      provider: { label: "Provider", type: "select" },
+      model: { label: "Model", type: "select" },
+    },
+  },
+  llm_chart: {
+    label: "Model",
+    fields: {
+      provider: { label: "Provider", type: "select" },
+      model: { label: "Model", type: "select" },
+    },
+  },
+  llm_memory: {
+    label: "Model",
+    fields: {
+      provider: { label: "Provider", type: "select" },
+      model: { label: "Model", type: "select" },
+    },
+  },
+  llm_report: {
+    label: "Model",
+    fields: {
+      provider: { label: "Provider", type: "select" },
+      model: { label: "Model", type: "select" },
+    },
+  },
   llm: {
     label: "Default LLM (Fallback)",
     fields: {
@@ -33,12 +61,48 @@ const AGENT_SECTIONS = [
     title: "Planner Agent",
     llmGroup: "llm_planner",
     promptAgent: "planner",
+    toggleKey: "planner",
+    toggleEnabled: false,
   },
   {
     key: "database",
     title: "Database Agent",
     llmGroup: "llm_database",
     promptAgent: "database",
+    toggleKey: "database",
+    toggleEnabled: true,
+  },
+  {
+    key: "browser",
+    title: "Browser Agent",
+    llmGroup: "llm_browser",
+    promptAgent: "browser",
+    toggleKey: "browser",
+    toggleEnabled: true,
+  },
+  {
+    key: "chart",
+    title: "Chart Agent",
+    llmGroup: "llm_chart",
+    promptAgent: "chart",
+    toggleKey: "chart",
+    toggleEnabled: true,
+  },
+  {
+    key: "memory",
+    title: "Memory Agent",
+    llmGroup: "llm_memory",
+    promptAgent: "memory",
+    toggleKey: "memory",
+    toggleEnabled: true,
+  },
+  {
+    key: "report",
+    title: "Report Agent",
+    llmGroup: "llm_report",
+    promptAgent: "report",
+    toggleKey: "report",
+    toggleEnabled: true,
   },
 ];
 
@@ -90,7 +154,15 @@ export default function ConfigPanel() {
 
   useEffect(() => {
     if (!llmOptions.providers.length) return;
-    const llmGroups = ["llm_planner", "llm_database", "llm"];
+    const llmGroups = [
+      "llm_planner",
+      "llm_database",
+      "llm_browser",
+      "llm_chart",
+      "llm_memory",
+      "llm_report",
+      "llm",
+    ];
     setConfigs((prev) => {
       let changed = false;
       const next = { ...prev };
@@ -138,6 +210,16 @@ export default function ConfigPanel() {
     }));
   };
 
+  const isEnabledValue = (value) => {
+    if (value === undefined || value === null || value === "") return true;
+    const normalized = String(value).trim().toLowerCase();
+    return !["0", "false", "no", "off", "disabled"].includes(normalized);
+  };
+
+  const handleAgentToggle = (key, checked) => {
+    handleChange("agents", key, checked ? "true" : "false");
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setStatus("");
@@ -174,10 +256,23 @@ export default function ConfigPanel() {
           <div className="agent-grid">
             {AGENT_SECTIONS.map((agent) => {
               const meta = GROUP_META[agent.llmGroup];
+              const isEnabled = isEnabledValue(configs.agents?.[agent.toggleKey]);
               return (
                 <div key={agent.key} className="agent-card">
                   <div className="agent-card-header">
                     <h3>{agent.title}</h3>
+                    {agent.toggleEnabled ? (
+                      <label className="toggle-wrap">
+                        <input
+                          type="checkbox"
+                          checked={isEnabled}
+                          onChange={(e) => handleAgentToggle(agent.toggleKey, e.target.checked)}
+                        />
+                        <span className="toggle-pill" />
+                      </label>
+                    ) : (
+                      <span className="toggle-fixed">Always on</span>
+                    )}
                   </div>
                   <div className="agent-card-body">
                     {meta && (

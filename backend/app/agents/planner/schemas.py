@@ -3,7 +3,23 @@ from dataclasses import dataclass
 DATABASE_ROUTE = "database"
 GENERAL_ROUTE = "general"
 VECTOR_ROUTE = "vector"
-VALID_ROUTE_TARGETS = {DATABASE_ROUTE, GENERAL_ROUTE, VECTOR_ROUTE}
+BROWSER_ROUTE = "browser"
+CHART_ROUTE = "chart"
+TIMESERIES_ROUTE = "timeseries"
+REPORT_ROUTE = "report"
+COMPARE_ROUTE = "compare"
+ALERT_ROUTE = "alert"
+VALID_ROUTE_TARGETS = {
+    DATABASE_ROUTE,
+    GENERAL_ROUTE,
+    VECTOR_ROUTE,
+    BROWSER_ROUTE,
+    CHART_ROUTE,
+    TIMESERIES_ROUTE,
+    REPORT_ROUTE,
+    COMPARE_ROUTE,
+    ALERT_ROUTE,
+}
 
 
 @dataclass

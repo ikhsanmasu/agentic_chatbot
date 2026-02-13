@@ -1,6 +1,8 @@
 import json
 from collections.abc import Generator
 
+from app.agents.memory import create_memory_agent
+from app.agents.memory.store import get_memory_summary
 from app.agents.planner import create_planner_agent
 from app.modules.chatbot.repository import ChatRepository
 from app.modules.chatbot.schemas import ChatRequest, ChatResponse
@@ -13,7 +15,38 @@ def _build_history(request: ChatRequest) -> list[dict]:
 def chat(request: ChatRequest) -> ChatResponse:
     planner = create_planner_agent()
     history = _build_history(request)
-    result = planner.execute(request.message, history=history)
+    memory_summary = None
+    if request.user_id:
+        memory_summary = get_memory_summary(
+            user_id=request.user_id,
+            agent="planner",
+            conversation_id=request.conversation_id,
+        )
+
+    context = {
+        "user_id": request.user_id,
+        "conversation_id": request.conversation_id,
+        "memory_summary": memory_summary,
+    }
+    result = planner.execute(request.message, history=history, context=context)
+
+    if request.user_id:
+        try:
+            memory_agent = create_memory_agent()
+            messages = history + [
+                {"role": "user", "content": request.message},
+                {"role": "assistant", "content": result.output},
+            ]
+            payload = {
+                "action": "summarize",
+                "user_id": request.user_id,
+                "conversation_id": request.conversation_id,
+                "agent": "planner",
+                "messages": messages,
+            }
+            memory_agent.execute(json.dumps(payload, ensure_ascii=True))
+        except Exception:
+            pass
 
     return ChatResponse(
         status="success",
@@ -25,11 +58,45 @@ def chat(request: ChatRequest) -> ChatResponse:
 def chat_stream(request: ChatRequest) -> Generator[str, None, None]:
     planner = create_planner_agent()
     history = _build_history(request)
+    memory_summary = None
+    if request.user_id:
+        memory_summary = get_memory_summary(
+            user_id=request.user_id,
+            agent="planner",
+            conversation_id=request.conversation_id,
+        )
 
-    for event in planner.execute_stream(request.message, history=history):
+    context = {
+        "user_id": request.user_id,
+        "conversation_id": request.conversation_id,
+        "memory_summary": memory_summary,
+    }
+    full_content = ""
+
+    for event in planner.execute_stream(request.message, history=history, context=context):
+        if event.get("type") == "content":
+            full_content += event.get("content", "")
         yield f"data: {json.dumps(event)}\n\n"
 
     yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    if request.user_id and full_content:
+        try:
+            memory_agent = create_memory_agent()
+            messages = history + [
+                {"role": "user", "content": request.message},
+                {"role": "assistant", "content": full_content},
+            ]
+            payload = {
+                "action": "summarize",
+                "user_id": request.user_id,
+                "conversation_id": request.conversation_id,
+                "agent": "planner",
+                "messages": messages,
+            }
+            memory_agent.execute(json.dumps(payload, ensure_ascii=True))
+        except Exception:
+            pass
 
 
 # Conversation services.

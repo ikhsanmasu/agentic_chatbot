@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     VECTORDB_INDEX: str = ""
     VECTORDB_NAMESPACE: str = ""
 
+    # Web Search
+    WEB_SEARCH_PROVIDER: str = "serper"
+    WEB_SEARCH_API_KEY: str = ""
+    WEB_SEARCH_API_URL: str = ""
+    WEB_BROWSE_MAX_RESULTS: int = 5
+    WEB_BROWSE_MAX_PAGES: int = 3
+    WEB_BROWSE_MAX_CHARS: int = 4000
+    WEB_BROWSE_TIMEOUT: int = 12
+    WEB_BROWSE_USER_AGENT: str = "agentic-chatbot/1.0"
+
     # Application DB (chat history persistence)
     APP_DATABASE_URL: str = ""
     DATABASE_URL: str = ""

@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
+import Chart from "react-apexcharts";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -101,7 +102,12 @@ export default function Playground({
       const response = await fetch(`${API_BASE}/v1/chatbot/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, history }),
+        body: JSON.stringify({
+          message: text,
+          history,
+          user_id: USER_ID,
+          conversation_id: targetChat.id,
+        }),
       });
 
       if (!response.ok || !response.body) {
@@ -395,6 +401,12 @@ function MessageBubble({
   const hasThinking = message.thinking && message.thinking.length > 0;
   const hasContent = message.content && message.content.length > 0;
   const isThinkingActive = message.isStreaming && !message.thinkingDone;
+  const reportPayload =
+    !message.isStreaming && message.content ? parseReportPayload(message.content) : null;
+  const chartPayload =
+    !message.isStreaming && !reportPayload && message.content
+      ? parseChartPayload(message.content)
+      : null;
 
   // Streaming with nothing yet
   if (message.isStreaming && !hasThinking && !hasContent) {
@@ -410,8 +422,16 @@ function MessageBubble({
     );
   }
 
+  const messageClass = [
+    "message assistant",
+    chartPayload?.chart ? "chart-message" : "",
+    reportPayload ? "report-message" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className="message assistant">
+    <div className={messageClass}>
       {hasThinking && (
         <button
           type="button"
@@ -436,13 +456,20 @@ function MessageBubble({
           <span className="thinking-pill-open">Open</span>
         </button>
       )}
-      {hasContent && (
+      {hasContent && !reportPayload && !chartPayload?.chart && !chartPayload?.error && (
         <div className={`content-block ${!hasThinking ? "only" : ""}`}>
           <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
             {message.content}
           </ReactMarkdown>
         </div>
       )}
+      {reportPayload && <ReportBlock report={reportPayload} />}
+      {chartPayload?.error && (
+        <div className={`content-block ${!hasThinking ? "only" : ""}`}>
+          <p>{chartPayload.error}</p>
+        </div>
+      )}
+      {chartPayload?.chart && <ChartBlock chart={chartPayload.chart} />}
     </div>
   );
 }
@@ -535,4 +562,304 @@ function resolveThinkingMessage(messageList, selectionId) {
       (m) => m.id === selectionId && m.role === "assistant" && m.thinking
     ) || null
   );
+}
+
+function parseChartPayload(content) {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(trimmed);
+    if (payload?.error) {
+      return { error: String(payload.error) };
+    }
+    if (payload?.chart) {
+      return { chart: payload.chart };
+    }
+    if (payload?.type && payload?.series) {
+      return { chart: payload };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function parseReportPayload(content) {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(trimmed);
+    if (payload?.report) {
+      return payload.report;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function downloadBase64File(base64, filename, mimeType) {
+  try {
+    const binary = atob(base64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error("Failed to download file", err);
+  }
+}
+
+function ReportBlock({ report }) {
+  const [showPreview, setShowPreview] = useState(true);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const rawFilename = report?.filename || "report.md";
+  const mdFilename = rawFilename.toLowerCase().endsWith(".md")
+    ? rawFilename
+    : "report.md";
+  const content = report?.content || "";
+
+  const handleDownload = () => {
+    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = mdFilename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadPdf = async () => {
+    if (isDownloadingPdf) return;
+
+    const pdfFilename = rawFilename.toLowerCase().endsWith(".pdf")
+      ? rawFilename
+      : rawFilename.replace(/\.[^.]+$/, "") + ".pdf";
+
+    if (report?.pdf_base64) {
+      downloadBase64File(report.pdf_base64, pdfFilename, "application/pdf");
+      return;
+    }
+
+    if (!report?.query) {
+      handleDownload();
+      return;
+    }
+
+    try {
+      setIsDownloadingPdf(true);
+      const response = await fetch(`${API_BASE}/v1/report/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: report.query, format: "pdf" }),
+      });
+      if (!response.ok) {
+        throw new Error("Failed to generate PDF");
+      }
+      const data = await response.json();
+      if (data?.report?.pdf_base64) {
+        const resolvedName =
+          data.report.filename && data.report.filename.endsWith(".pdf")
+            ? data.report.filename
+            : pdfFilename;
+        downloadBase64File(data.report.pdf_base64, resolvedName, "application/pdf");
+        return;
+      }
+      handleDownload();
+    } catch (err) {
+      console.error(err);
+      handleDownload();
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
+  return (
+    <div className="report-block">
+      <div className="report-header">
+        <div>
+          <h4>{report?.title || "Report"}</h4>
+          {report?.period && <p className="report-period">{report.period}</p>}
+        </div>
+        <div className="report-actions">
+          <button
+            type="button"
+            className="report-btn ghost"
+            onClick={() => setShowPreview((prev) => !prev)}
+          >
+            {showPreview ? "Hide preview" : "Show preview"}
+          </button>
+          <button type="button" className="report-btn" onClick={handleDownload}>
+            Download MD
+          </button>
+          <button
+            type="button"
+            className="report-btn"
+            onClick={handleDownloadPdf}
+            disabled={isDownloadingPdf}
+          >
+            {isDownloadingPdf ? "Preparing PDF..." : "Download PDF"}
+          </button>
+        </div>
+      </div>
+      {showPreview && (
+        <div className="report-preview">
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+            {content}
+          </ReactMarkdown>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChartBlock({ chart }) {
+  const type = normalizeChartType(chart?.type);
+  const normalized = useMemo(() => normalizeApexSeries(chart, type), [chart, type]);
+
+  const options = useMemo(() => {
+    const textMuted = getCssVar("--text-muted", "#717171");
+    const textPrimary = getCssVar("--text-primary", "#141414");
+    const border = getCssVar("--border", "#e8e8e8");
+    const isDark = getCurrentTheme() === "dark";
+
+    const baseOptions = {
+      chart: {
+        type,
+        toolbar: { show: false },
+        foreColor: textMuted,
+        fontFamily: "Inter, Segoe UI, sans-serif",
+      },
+      colors: CHART_COLORS,
+      grid: {
+        borderColor: border,
+        strokeDashArray: 4,
+      },
+      legend: {
+        show: type !== "bar" || normalized.series.length > 1,
+        position: "bottom",
+        labels: { colors: textMuted },
+      },
+      dataLabels: { enabled: false },
+      theme: { mode: isDark ? "dark" : "light" },
+    };
+
+    if (type === "pie") {
+      return {
+        ...baseOptions,
+        labels: normalized.labels,
+      };
+    }
+
+    return {
+      ...baseOptions,
+      xaxis: {
+        type: "category",
+        title: { text: chart?.x_label || "", style: { color: textPrimary } },
+        labels: { rotate: -25 },
+      },
+      yaxis: {
+        title: { text: chart?.y_label || "", style: { color: textPrimary } },
+      },
+      plotOptions: {
+        bar: {
+          borderRadius: 6,
+          columnWidth: "55%",
+        },
+      },
+      stroke: {
+        curve: "smooth",
+        width: type === "line" ? 3 : 0,
+      },
+    };
+  }, [chart, type, normalized.labels, normalized.series.length]);
+
+  const height = type === "pie" ? 360 : 420;
+
+  return (
+    <div className="chart-block">
+      <div className="chart-header">
+        <h4>{chart?.title || "Chart"}</h4>
+        {chart?.unit && <span className="chart-unit">{chart.unit}</span>}
+      </div>
+      <div className="chart-canvas">
+        <Chart
+          options={options}
+          series={normalized.series}
+          type={type}
+          height={height}
+          width="100%"
+        />
+      </div>
+    </div>
+  );
+}
+
+const CHART_COLORS = [
+  "#0f172a",
+  "#1d4ed8",
+  "#0f766e",
+  "#b45309",
+  "#6d28d9",
+  "#be123c",
+];
+
+function normalizeChartType(type) {
+  if (type === "line" || type === "pie") return type;
+  return "bar";
+}
+
+function normalizeApexSeries(chart, type) {
+  const rawSeries = Array.isArray(chart?.series) ? chart.series : [];
+  if (type === "pie") {
+    const data = rawSeries[0]?.data || [];
+    const labels = data.map((point) => String(point?.x ?? ""));
+    const series = data.map((point) => toNumber(point?.y));
+    return { labels, series };
+  }
+
+  const series = rawSeries.map((item, idx) => ({
+    name: item?.name || `Series ${idx + 1}`,
+    data: Array.isArray(item?.data)
+      ? item.data.map((point) => ({
+          x: String(point?.x ?? ""),
+          y: toNumber(point?.y),
+        }))
+      : [],
+  }));
+
+  return { labels: [], series };
+}
+
+function toNumber(value) {
+  if (value === null || value === undefined) return 0;
+  const num = Number(String(value).replace(/,/g, ""));
+  return Number.isFinite(num) ? num : 0;
+}
+
+function getCssVar(name, fallback) {
+  if (typeof window === "undefined") return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name);
+  return value ? value.trim() : fallback;
+}
+
+function getCurrentTheme() {
+  if (typeof document === "undefined") return "light";
+  return document.documentElement.getAttribute("data-theme") || "light";
 }

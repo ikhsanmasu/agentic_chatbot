@@ -529,6 +529,19 @@ body {
   gap: 0;
 }
 
+.message.assistant.chart-message {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  align-self: stretch;
+}
+
+.message.assistant.report-message {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0;
+}
+
 .thinking-pill {
   width: fit-content;
   max-width: min(820px, 100%);
@@ -549,6 +562,9 @@ body {
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
+.message.assistant.chart-message .thinking-pill {
+  max-width: 100%;
+}
 .thinking-pill:hover {
   border-color: var(--composer-focus);
 }
@@ -817,6 +833,222 @@ body {
   padding-left: 12px;
   border-left: 3px solid var(--border-strong);
   color: var(--text-secondary);
+}
+
+.chart-block {
+  margin-top: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px 20px;
+  box-shadow: var(--shadow-soft);
+  width: 100%;
+  min-width: 100%;
+}
+
+.chart-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.chart-header h4 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.chart-unit {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.chart-canvas {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-soft);
+  border-radius: 12px;
+  padding: 12px;
+  min-height: 380px;
+}
+
+.chart-canvas .apexcharts-canvas {
+  width: 100% !important;
+}
+
+.chart-canvas .apexcharts-svg {
+  background: transparent !important;
+}
+
+.chart-svg {
+  width: 100%;
+  height: auto;
+}
+
+.chart-svg.pie {
+  max-width: 260px;
+}
+
+.chart-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.chart-axis-line {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+
+.chart-label {
+  font-size: 10px;
+  fill: var(--text-muted);
+}
+
+.chart-tick {
+  font-size: 10px;
+  fill: var(--text-muted);
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 12px;
+}
+
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.chart-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.report-block {
+  margin-top: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px 20px;
+  box-shadow: var(--shadow-soft);
+}
+
+.report-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.report-header h4 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.report-period {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.report-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.report-btn {
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--send-bg);
+  color: var(--send-text);
+}
+
+.report-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.report-btn.ghost {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+
+.report-preview {
+  background: var(--surface-soft);
+  border-radius: 12px;
+  padding: 12px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.toggle-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.toggle-wrap input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-pill {
+  width: 44px;
+  height: 24px;
+  background: var(--border);
+  border-radius: 999px;
+  position: relative;
+  transition: background 0.2s ease;
+}
+
+.toggle-pill::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--main-bg);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  transition: transform 0.2s ease;
+}
+
+.toggle-wrap input:checked + .toggle-pill {
+  background: var(--accent);
+}
+
+.toggle-wrap input:checked + .toggle-pill::after {
+  transform: translateX(20px);
+}
+
+.toggle-fixed {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: 999px;
 }
 
 .input-area {

@@ -3,23 +3,57 @@ import logging
 import re
 from collections.abc import Generator
 
+from app.agents.alert.agent import AlertAgent
 from app.agents.base import AgentResult, BaseAgent
+from app.agents.browser.agent import BrowserAgent
+from app.agents.chart.agent import ChartAgent
+from app.agents.compare.agent import CompareAgent
 from app.agents.database.agent import DatabaseAgent
-from app.agents.planner.schemas import DATABASE_ROUTE, GENERAL_ROUTE, VECTOR_ROUTE, RoutingDecision
+from app.agents.report.agent import ReportAgent
+from app.agents.planner.schemas import (
+    ALERT_ROUTE,
+    BROWSER_ROUTE,
+    CHART_ROUTE,
+    COMPARE_ROUTE,
+    DATABASE_ROUTE,
+    GENERAL_ROUTE,
+    REPORT_ROUTE,
+    TIMESERIES_ROUTE,
+    VECTOR_ROUTE,
+    RoutingDecision,
+)
+from app.agents.timeseries.agent import TimeSeriesAgent
 from app.agents.vector.agent import VectorAgent
 from app.agents.planner.streaming import parse_think_tags
 from app.core.llm.base import BaseLLM
 from app.core.llm.schemas import GenerateConfig
-from app.modules.admin.service import resolve_prompt
+from app.modules.admin.service import resolve_config, resolve_prompt
 
 logger = logging.getLogger(__name__)
 
 
 class PlannerAgent(BaseAgent):
-    def __init__(self, llm: BaseLLM, database_agent: DatabaseAgent, vector_agent: VectorAgent):
+    def __init__(
+        self,
+        llm: BaseLLM,
+        database_agent: DatabaseAgent,
+        vector_agent: VectorAgent,
+        browser_agent: BrowserAgent,
+        chart_agent: ChartAgent,
+        report_agent: ReportAgent,
+        timeseries_agent: TimeSeriesAgent | None = None,
+        compare_agent: CompareAgent | None = None,
+        alert_agent: AlertAgent | None = None,
+    ):
         super().__init__(llm)
         self.database_agent = database_agent
         self.vector_agent = vector_agent
+        self.browser_agent = browser_agent
+        self.chart_agent = chart_agent
+        self.report_agent = report_agent
+        self.timeseries_agent = timeseries_agent
+        self.compare_agent = compare_agent
+        self.alert_agent = alert_agent
 
     def _build_db_plan_messages(self, user_message: str) -> list[dict[str, str]]:
         return [
@@ -37,10 +71,18 @@ class PlannerAgent(BaseAgent):
         self,
         user_message: str,
         history: list[dict] | None = None,
+        memory_summary: str | None = None,
     ) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = [
             {"role": "system", "content": resolve_prompt("general_system")},
         ]
+        if memory_summary:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"Konteks pengguna (ringkas):\n{memory_summary}",
+                }
+            )
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_message})
@@ -67,6 +109,12 @@ class PlannerAgent(BaseAgent):
             {"role": "user", "content": resolve_prompt("vector_command_user").format(message=user_message)},
         ]
 
+    def _build_ts_command_messages(self, user_message: str) -> list[dict[str, str]]:
+        return [
+            {"role": "system", "content": resolve_prompt("ts_command_system")},
+            {"role": "user", "content": resolve_prompt("ts_command_user").format(message=user_message)},
+        ]
+
     def _build_db_reflection_messages(
         self,
         question: str,
@@ -86,6 +134,28 @@ class PlannerAgent(BaseAgent):
                 ),
             },
         ]
+
+    @staticmethod
+    def _disabled_agent_message(agent: str) -> str:
+        return (
+            f"Agent '{agent}' sedang dinonaktifkan di konfigurasi. "
+            "Aktifkan dulu di halaman Config untuk menggunakan fitur ini."
+        )
+
+    @staticmethod
+    def _is_truthy(value: str) -> bool:
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
+    def _is_agent_enabled(self, agent: str) -> bool:
+        if agent in {GENERAL_ROUTE}:
+            return True
+        try:
+            raw = resolve_config("agents", agent)
+        except Exception:
+            return True
+        if raw is None or raw == "":
+            return True
+        return self._is_truthy(str(raw))
 
     @staticmethod
     def _strip_json_fence(raw_text: str) -> str:
@@ -163,6 +233,15 @@ class PlannerAgent(BaseAgent):
 
     def execute(self, input_text: str, context: dict | None = None, history: list[dict] | None = None) -> AgentResult:
         decision = self._route_message(input_text)
+        if not self._is_agent_enabled(decision.target_agent):
+            return AgentResult(
+                output=self._disabled_agent_message(decision.target_agent),
+                metadata={
+                    "agent": decision.target_agent,
+                    "routing_reasoning": decision.reasoning,
+                    "disabled": True,
+                },
+            )
 
         if decision.target_agent == DATABASE_ROUTE:
             plan_summary = ""
@@ -258,7 +337,95 @@ class PlannerAgent(BaseAgent):
                 },
             )
 
-        messages = self._build_general_messages(input_text, history=history)
+        if decision.target_agent == BROWSER_ROUTE:
+            browser_result = self.browser_agent.execute(decision.routed_input, context=context)
+            return AgentResult(
+                output=browser_result.output,
+                metadata={
+                    "agent": decision.target_agent,
+                    "routing_reasoning": decision.reasoning,
+                    **browser_result.metadata,
+                },
+            )
+
+        if decision.target_agent == CHART_ROUTE:
+            chart_result = self.chart_agent.execute(decision.routed_input, context=context)
+            return AgentResult(
+                output=chart_result.output,
+                metadata={
+                    "agent": decision.target_agent,
+                    "routing_reasoning": decision.reasoning,
+                    **chart_result.metadata,
+                },
+            )
+
+        if decision.target_agent == REPORT_ROUTE:
+            report_result = self.report_agent.execute(decision.routed_input, context=context)
+            return AgentResult(
+                output=report_result.output,
+                metadata={
+                    "agent": decision.target_agent,
+                    "routing_reasoning": decision.reasoning,
+                    **report_result.metadata,
+                },
+            )
+
+        if decision.target_agent == TIMESERIES_ROUTE:
+            if self.timeseries_agent is None:
+                return AgentResult(
+                    output="Error: TimeSeries agent is not configured.",
+                    metadata={"agent": decision.target_agent, "error": "not configured"},
+                )
+            ts_result = self.timeseries_agent.execute(decision.routed_input, context=context)
+            return AgentResult(
+                output=ts_result.output,
+                metadata={
+                    "agent": decision.target_agent,
+                    "routing_reasoning": decision.reasoning,
+                    **ts_result.metadata,
+                },
+            )
+
+        if decision.target_agent == COMPARE_ROUTE:
+            if self.compare_agent is None:
+                return AgentResult(
+                    output="Error: Compare agent is not configured.",
+                    metadata={"agent": decision.target_agent, "error": "not configured"},
+                )
+            cmp_result = self.compare_agent.execute(decision.routed_input, context=context)
+            return AgentResult(
+                output=cmp_result.output,
+                metadata={
+                    "agent": decision.target_agent,
+                    "routing_reasoning": decision.reasoning,
+                    **cmp_result.metadata,
+                },
+            )
+
+        if decision.target_agent == ALERT_ROUTE:
+            if self.alert_agent is None:
+                return AgentResult(
+                    output="Error: Alert agent is not configured.",
+                    metadata={"agent": decision.target_agent, "error": "not configured"},
+                )
+            alert_result = self.alert_agent.execute(decision.routed_input, context=context)
+            return AgentResult(
+                output=alert_result.output,
+                metadata={
+                    "agent": decision.target_agent,
+                    "routing_reasoning": decision.reasoning,
+                    **alert_result.metadata,
+                },
+            )
+
+        memory_summary = None
+        if context:
+            memory_summary = context.get("memory_summary")
+        messages = self._build_general_messages(
+            input_text,
+            history=history,
+            memory_summary=memory_summary,
+        )
         response = self.llm.generate(messages=messages)
         return AgentResult(
             output=response.text,
@@ -281,6 +448,9 @@ class PlannerAgent(BaseAgent):
                 f"Alasan: {decision.reasoning}\n\n"
             ),
         }
+        if not self._is_agent_enabled(decision.target_agent):
+            yield {"type": "content", "content": self._disabled_agent_message(decision.target_agent)}
+            return
 
         if decision.target_agent == DATABASE_ROUTE:
             plan_summary = ""
@@ -403,6 +573,100 @@ class PlannerAgent(BaseAgent):
             yield {"type": "content", "content": vector_result.output}
             return
 
-        messages = self._build_general_messages(input_text, history=history)
+        if decision.target_agent == BROWSER_ROUTE:
+            yield {"type": "thinking", "content": "Menelusuri sumber internet...\n"}
+            browser_result = None
+            for event in self.browser_agent.execute_stream(decision.routed_input, context=context):
+                if event.get("type") == "_result":
+                    browser_result = event["data"]
+                else:
+                    yield event
+
+            if browser_result is None:
+                yield {"type": "content", "content": "Error: Browser agent returned no result."}
+                return
+
+            yield {"type": "content", "content": browser_result.output}
+            return
+
+        if decision.target_agent == CHART_ROUTE:
+            yield {"type": "thinking", "content": "Menyiapkan chart...\n"}
+            chart_result = None
+            for event in self.chart_agent.execute_stream(decision.routed_input, context=context):
+                if event.get("type") == "_result":
+                    chart_result = event["data"]
+                else:
+                    yield event
+
+            if chart_result is None:
+                yield {"type": "content", "content": "Error: Chart agent returned no result."}
+                return
+
+            yield {"type": "content", "content": chart_result.output}
+            return
+
+        if decision.target_agent == REPORT_ROUTE:
+            yield {"type": "thinking", "content": "Menyusun laporan...\n"}
+            report_result = None
+            for event in self.report_agent.execute_stream(decision.routed_input, context=context):
+                if event.get("type") == "_result":
+                    report_result = event["data"]
+                else:
+                    yield event
+
+            if report_result is None:
+                yield {"type": "content", "content": "Error: Report agent returned no result."}
+                return
+
+            yield {"type": "content", "content": report_result.output}
+            return
+
+        if decision.target_agent == TIMESERIES_ROUTE:
+            if self.timeseries_agent is None:
+                yield {"type": "content", "content": "Error: TimeSeries agent is not configured."}
+                return
+
+            yield {"type": "thinking", "content": "Memulai analisis time-series...\n"}
+            for event in self.timeseries_agent.execute_stream(decision.routed_input, context=context):
+                if event.get("type") == "_result":
+                    pass
+                else:
+                    yield event
+            return
+
+        if decision.target_agent == COMPARE_ROUTE:
+            if self.compare_agent is None:
+                yield {"type": "content", "content": "Error: Compare agent is not configured."}
+                return
+
+            yield {"type": "thinking", "content": "Memulai analisis perbandingan...\n"}
+            for event in self.compare_agent.execute_stream(decision.routed_input, context=context):
+                if event.get("type") == "_result":
+                    pass
+                else:
+                    yield event
+            return
+
+        if decision.target_agent == ALERT_ROUTE:
+            if self.alert_agent is None:
+                yield {"type": "content", "content": "Error: Alert agent is not configured."}
+                return
+
+            yield {"type": "thinking", "content": "Memeriksa alert dan threshold...\n"}
+            for event in self.alert_agent.execute_stream(decision.routed_input, context=context):
+                if event.get("type") == "_result":
+                    pass
+                else:
+                    yield event
+            return
+
+        memory_summary = None
+        if context:
+            memory_summary = context.get("memory_summary")
+        messages = self._build_general_messages(
+            input_text,
+            history=history,
+            memory_summary=memory_summary,
+        )
         chunks = self.llm.generate_stream(messages=messages)
         yield from parse_think_tags(chunks)

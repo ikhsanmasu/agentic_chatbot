@@ -98,6 +98,7 @@ def init_app_database() -> None:
         ConversationHistory,
         ConversationMessage,
     )
+    from app.agents.memory.models import AgentMemory
 
     _ = (
         AdminConfig,
@@ -105,6 +106,7 @@ def init_app_database() -> None:
         Conversation,
         ConversationMessage,
         ConversationHistory,
+        AgentMemory,
     )
     SQLModel.metadata.create_all(app_engine)
     logger.info("Application tables are ready on %s", _safe_url(app_engine.url))
