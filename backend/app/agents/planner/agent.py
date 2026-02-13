@@ -5,7 +5,8 @@ from collections.abc import Generator
 
 from app.agents.base import AgentResult, BaseAgent
 from app.agents.database.agent import DatabaseAgent
-from app.agents.planner.schemas import DATABASE_ROUTE, GENERAL_ROUTE, RoutingDecision
+from app.agents.planner.schemas import DATABASE_ROUTE, GENERAL_ROUTE, VECTOR_ROUTE, RoutingDecision
+from app.agents.vector.agent import VectorAgent
 from app.agents.planner.streaming import parse_think_tags
 from app.core.llm.base import BaseLLM
 from app.core.llm.schemas import GenerateConfig
@@ -15,9 +16,10 @@ logger = logging.getLogger(__name__)
 
 
 class PlannerAgent(BaseAgent):
-    def __init__(self, llm: BaseLLM, database_agent: DatabaseAgent):
+    def __init__(self, llm: BaseLLM, database_agent: DatabaseAgent, vector_agent: VectorAgent):
         super().__init__(llm)
         self.database_agent = database_agent
+        self.vector_agent = vector_agent
 
     def _build_db_plan_messages(self, user_message: str) -> list[dict[str, str]]:
         return [
@@ -57,6 +59,12 @@ class PlannerAgent(BaseAgent):
         return [
             {"role": "system", "content": resolve_prompt("db_command_system")},
             {"role": "user", "content": resolve_prompt("db_command_user").format(message=user_message)},
+        ]
+
+    def _build_vector_command_messages(self, user_message: str) -> list[dict[str, str]]:
+        return [
+            {"role": "system", "content": resolve_prompt("vector_command_system")},
+            {"role": "user", "content": resolve_prompt("vector_command_user").format(message=user_message)},
         ]
 
     def _build_db_reflection_messages(
@@ -222,6 +230,34 @@ class PlannerAgent(BaseAgent):
                 },
             )
 
+        if decision.target_agent == VECTOR_ROUTE:
+            command_messages = self._build_vector_command_messages(decision.routed_input)
+            command_config = GenerateConfig(temperature=0)
+            command_response = self.llm.generate(messages=command_messages, config=command_config)
+            payload = self._parse_json(command_response.text)
+            if not payload or payload.get("error"):
+                error_msg = payload.get("error") if payload else "Invalid vector instruction."
+                return AgentResult(
+                    output=f"Error: {error_msg}",
+                    metadata={
+                        "agent": decision.target_agent,
+                        "routing_reasoning": decision.reasoning,
+                        "vector_error": error_msg,
+                    },
+                )
+
+            instruction = json.dumps(payload, ensure_ascii=True)
+            vector_result = self.vector_agent.execute(instruction)
+            return AgentResult(
+                output=vector_result.output,
+                metadata={
+                    "agent": decision.target_agent,
+                    "routing_reasoning": decision.reasoning,
+                    "vector_instruction": instruction,
+                    **vector_result.metadata,
+                },
+            )
+
         messages = self._build_general_messages(input_text, history=history)
         response = self.llm.generate(messages=messages)
         return AgentResult(
@@ -337,6 +373,34 @@ class PlannerAgent(BaseAgent):
             chunks = self.llm.generate_stream(messages=messages)
             yield from parse_think_tags(chunks)
 
+            return
+
+        if decision.target_agent == VECTOR_ROUTE:
+            yield {"type": "thinking", "content": "Menyusun instruksi vector...\n"}
+            command_messages = self._build_vector_command_messages(decision.routed_input)
+            command_config = GenerateConfig(temperature=0)
+            command_response = self.llm.generate(messages=command_messages, config=command_config)
+            payload = self._parse_json(command_response.text)
+            if not payload or payload.get("error"):
+                error_msg = payload.get("error") if payload else "Invalid vector instruction."
+                yield {"type": "content", "content": f"Error: {error_msg}"}
+                return
+
+            instruction = json.dumps(payload, ensure_ascii=True)
+            yield {"type": "thinking", "content": f"Instruksi Vector Agent: {instruction}\n\n"}
+
+            vector_result = None
+            for event in self.vector_agent.execute_stream(instruction):
+                if event.get("type") == "_result":
+                    vector_result = event["data"]
+                else:
+                    yield event
+
+            if vector_result is None:
+                yield {"type": "content", "content": "Error: Vector agent returned no result."}
+                return
+
+            yield {"type": "content", "content": vector_result.output}
             return
 
         messages = self._build_general_messages(input_text, history=history)

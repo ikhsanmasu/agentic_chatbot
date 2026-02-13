@@ -2,7 +2,8 @@ from dataclasses import dataclass
 
 DATABASE_ROUTE = "database"
 GENERAL_ROUTE = "general"
-VALID_ROUTE_TARGETS = {DATABASE_ROUTE, GENERAL_ROUTE}
+VECTOR_ROUTE = "vector"
+VALID_ROUTE_TARGETS = {DATABASE_ROUTE, GENERAL_ROUTE, VECTOR_ROUTE}
 
 
 @dataclass

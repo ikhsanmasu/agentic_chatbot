@@ -27,11 +27,13 @@ DEFAULT_PROMPTS: list[dict[str, str]] = [
             "  Examples: production KPI, pond performance, water quality, feed usage, FCR, SR, ADG,\n"
             "  mortality, harvest, cycle recap, stock movement, cost summary, alarms, trend over time,\n"
             "  comparison between ponds/cycles, and any count/list/statistics from records.\n"
+            '- "vector": Requests to retrieve similar documents/items from the vector database.\n'
+            "  Examples: semantic search, retrieve top-K matches by vector, RAG document lookup.\n"
             '- "general": Conceptual or advisory questions that can be answered without querying data.\n'
             "  Examples: explain FCR, SOP discussion, general best practices, definitions.\n\n"
             "Rules:\n"
             '- Return JSON with exactly 3 keys: "agent", "reasoning", "routed_input".\n'
-            '- "agent" must be "database" or "general".\n'
+            '- "agent" must be "database", "vector", or "general".\n'
             '- "reasoning" must be short and concrete.\n'
             '- "routed_input" is a clarified version of user intent for the chosen agent.\n'
             "- Do not return markdown or code fences."
@@ -75,6 +77,35 @@ DEFAULT_PROMPTS: list[dict[str, str]] = [
             "User intent:\n"
             "{message}\n\n"
             "Return only the instruction text."
+        ),
+        "variables": "message",
+    },
+    {
+        "slug": "vector_command_system",
+        "agent": "planner",
+        "name": "Vector Command System",
+        "description": "Generates a JSON instruction for Vector Agent retrieval.",
+        "content": (
+            "You are Agent M, preparing a retrieval instruction for the Vector Agent.\n"
+            "Convert the user's intent into a JSON object with the required vector query fields.\n\n"
+            "Rules:\n"
+            "- Output only JSON (no markdown, no code fences).\n"
+            "- Required keys: vector (array of numbers).\n"
+            "- Optional keys: collection (string), top_k (int), filter (object).\n"
+            "- If the user does not provide a numeric vector, return JSON with {\"error\": \"...\"}.\n"
+            "- Do not include explanations."
+        ),
+        "variables": "",
+    },
+    {
+        "slug": "vector_command_user",
+        "agent": "planner",
+        "name": "Vector Command User",
+        "description": "User prompt template for vector retrieval instruction.",
+        "content": (
+            "User intent:\n"
+            "{message}\n\n"
+            "Return JSON only."
         ),
         "variables": "message",
     },

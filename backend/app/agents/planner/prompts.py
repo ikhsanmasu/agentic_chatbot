@@ -6,12 +6,14 @@ Decide which agent should handle the user message:
   Examples: production KPI, pond performance, water quality, feed usage, FCR, SR, ADG,
   mortality, harvest, cycle recap, stock movement, cost summary, alarms, trend over time,
   comparison between ponds/cycles, and any count/list/statistics from records.
+- "vector": Requests to retrieve similar documents/items from the vector database.
+  Examples: semantic search, retrieve top-K matches by vector, RAG document lookup.
 - "general": Conceptual or advisory questions that can be answered without querying data.
   Examples: explain FCR, SOP discussion, general best practices, definitions.
 
 Rules:
 - Return JSON with exactly 3 keys: "agent", "reasoning", "routed_input".
-- "agent" must be "database" or "general".
+- "agent" must be "database", "vector", or "general".
 - "reasoning" must be short and concrete.
 - "routed_input" is a clarified version of user intent for the chosen agent.
 - Do not return markdown or code fences.
@@ -40,6 +42,25 @@ User intent:
 {message}
 
 Return only the instruction text.\
+"""
+
+VECTOR_COMMAND_SYSTEM = """\
+You are Agent M, preparing a retrieval instruction for the Vector Agent.
+Convert the user's intent into a JSON object with the required vector query fields.
+
+Rules:
+- Output only JSON (no markdown, no code fences).
+- Required keys: vector (array of numbers).
+- Optional keys: collection (string), top_k (int), filter (object).
+- If the user does not provide a numeric vector, return JSON with {"error": "..."}.
+- Do not include explanations.
+"""
+
+VECTOR_COMMAND_USER = """\
+User intent:
+{message}
+
+Return JSON only.\
 """
 
 DB_PLAN_SYSTEM = """\

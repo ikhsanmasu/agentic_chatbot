@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     XAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
 
+    # Vector DB
+    VECTORDB_PROVIDER: str = "memory"
+    VECTORDB_URL: str = ""
+    VECTORDB_API_KEY: str = ""
+    VECTORDB_COLLECTION: str = "default"
+    VECTORDB_INDEX: str = ""
+    VECTORDB_NAMESPACE: str = ""
+
     # Application DB (chat history persistence)
     APP_DATABASE_URL: str = ""
     DATABASE_URL: str = ""
